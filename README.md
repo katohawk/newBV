@@ -65,6 +65,42 @@ newBV 是基于 [BV](https://github.com/aaa1115910/bv) 重构的 [哔哩哔哩](
 - JDK 17
 - Android SDK（compileSdk 36）
 
+## Fork 同步工作流
+
+本仓库的个人修改维护在 `family-tv` 分支，`main` 保持与上游（[Frost819/newBV](https://github.com/Frost819/newBV)）一致。
+
+### Remote 结构
+
+```text
+origin   -> https://github.com/katohawk/newBV   （我的 Fork）
+upstream -> https://github.com/Frost819/newBV   （上游仓库）
+```
+
+```text
+upstream/main  →  origin/main  →  family-tv
+```
+
+- `main`：只用于同步上游，不直接堆个人修改
+- `family-tv`：长期保存个人修改（家庭收藏 / 首页快捷入口 / TV 自定义功能等）
+
+### 同步上游更新
+
+```bash
+git fetch upstream
+git switch main
+git merge --ff-only upstream/main
+git push origin main
+git switch family-tv
+git rebase main
+git push --force-with-lease origin family-tv
+```
+
+### rebase 冲突处理
+
+- 保留上游最新实现，同时保留 `family-tv` 的个人功能
+- 逐个解决冲突文件后：`git add <resolved files> && git rebase --continue`
+- 无法安全判断时，停在冲突现场，标记出需要人工判断的文件
+
 ## 开发文档
 
 - [AGENTS.md](AGENTS.md) — AI 协作开发规范（架构决策、代码规范、测试策略、踩坑经验）
