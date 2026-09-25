@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.frost819.newbv.app.data.VideoInfoRepository
+import dev.frost819.newbv.app.data.SkipTimeInfo
 import dev.frost819.newbv.app.entity.player.VideoListItem
 import dev.frost819.newbv.biliapi.entity.ApiType
 import dev.frost819.newbv.biliapi.entity.video.season.Episode
@@ -164,6 +165,36 @@ class SeasonDetailViewModel
 
                 _uiState.update { it.copy(loading = false) }
             }
+            loadSkipTimes()
+        }
+
+        /**
+         * 补拉分集片头片尾时间（自动跳过 OP/ED 用）。
+         *
+         * 统一走 Web 接口（App gRPC 不返回该数据），与详情加载并行、
+         * 失败静默降级（播放器查不到数据即不跳过），绝不影响详情加载与播放。
+         *
+         * @param seasonIdOverride 切季时传入目标季 ID，缺省用当前季
+         */
+        private fun loadSkipTimes(seasonIdOverride: Int? = null) {
+            viewModelScope.launch {
+                val times =
+                    videoDetailRepository.getPgcSkipTimes(
+                        epid = epid.takeIf { seasonIdOverride == null },
+                        seasonId = seasonIdOverride ?: seasonId.takeIf { it != 0 },
+                    )
+                if (times.isNotEmpty()) {
+                    videoInfoRepository.updateSkipTimes(
+                        times.mapValues { (_, skip) ->
+                            SkipTimeInfo(
+                                introEndSec = skip.introEnd,
+                                outroStartSec = skip.outroStart,
+                                outroEndSec = skip.outroEnd,
+                            )
+                        },
+                    )
+                }
+            }
         }
 
         /**
@@ -281,6 +312,7 @@ class SeasonDetailViewModel
 
                 _uiState.update { it.copy(loading = false) }
             }
+            loadSkipTimes(seasonIdOverride = targetSeasonId)
         }
 
         /**

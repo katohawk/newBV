@@ -251,6 +251,14 @@ object Prefs {
 
     // --- 播放器 - 视频（PRD 7.1） ---
 
+    /**
+     * 自动跳过片头片尾（默认开启）。
+     *
+     * 仅对番剧生效：B 站接口会返回每集的 OP/ED 起止时间，
+     * 播放到片头区间内自动跳到片头结束，进入片尾区间自动跳到片尾结束。
+     */
+    var skipIntroOutro by pref(PrefKeys.skipIntroOutro, true)
+
     /** 默认画质。 */
     var defaultQuality by pref(
         PrefKeys.defaultQuality,

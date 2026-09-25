@@ -58,6 +58,7 @@ fun AudioVideoSetting(modifier: Modifier = Modifier) {
     var enableSoftwareVideoDecoder by remember { mutableStateOf(Prefs.enableSoftwareVideoDecoder) }
     var showPlayerDebugInfo by remember { mutableStateOf(Prefs.showPlayerDebugInfo) }
     var autoSelectCdn by remember { mutableStateOf(Prefs.autoSelectCdn) }
+    var skipIntroOutro by remember { mutableStateOf(Prefs.skipIntroOutro) }
 
     Column(
         modifier =
@@ -137,6 +138,15 @@ fun AudioVideoSetting(modifier: Modifier = Modifier) {
             onCheckedChange = {
                 autoSelectCdn = it
                 Prefs.autoSelectCdn = it
+            },
+        )
+        SettingSwitchListItem(
+            title = "自动跳过片头片尾",
+            supportText = "播放番剧时自动跳过 OP/ED（依据 B 站提供的片头片尾时间）",
+            checked = skipIntroOutro,
+            onCheckedChange = {
+                skipIntroOutro = it
+                Prefs.skipIntroOutro = it
             },
         )
     }

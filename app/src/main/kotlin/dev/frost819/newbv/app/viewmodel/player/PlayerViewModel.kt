@@ -134,6 +134,10 @@ class PlayerViewModel
 
         private val detachedWorkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+        // 自动跳过片头片尾：每个视频只跳一次，用户手动回看不会重复触发
+        private var hasSkippedIntro = false
+        private var hasSkippedOutro = false
+
         private val _uiState = MutableStateFlow(PlayerUiState())
         val uiState = _uiState.asStateFlow()
 
@@ -290,6 +294,51 @@ class PlayerViewModel
             startClockUpdater()
             // 同时观看人数观察者：监听 cid 变化即时拉取，就绪后周期刷新
             startOnlineWatchingObserver()
+            // 重置自动跳过状态（片头片尾时间从 VideoInfoRepository 按 cid 实时查询）
+            hasSkippedIntro = false
+            hasSkippedOutro = false
+        }
+
+        /**
+         * 检查并执行自动跳过片头/片尾。
+         *
+         * 在进度轮询（100ms）中调用，仅在播放状态下生效：
+         * - 片头：播放位置处于 OP 区间内时，跳到片头结束；
+         * - 片尾：进入 ED 区间时，跳到片尾结束（约等于视频结尾，随后自然触发播完流程）。
+         *
+         * 片头片尾时间来自 [VideoInfoRepository]（番剧详情页经 Web 接口补充拉取，
+         * App gRPC 接口不返回该数据），按 cid 实时查询；每个视频各只触发一次，
+         * 用户手动 seek 回片头不会重复跳过。开关关闭时完全不介入。
+         *
+         * @param positionMs 当前播放位置（毫秒）
+         * @param durationMs 视频总时长（毫秒），未知时为 0
+         */
+        private fun checkAutoSkip(
+            positionMs: Long,
+            durationMs: Long,
+        ) {
+            if (!Prefs.skipIntroOutro) return
+            if (_uiState.value.playerState != PlayerState.Playing) return
+            val skip = videoInfoRepository.skipTimes.value[_uiState.value.cid] ?: return
+
+            if (!hasSkippedIntro && skip.introEndSec > 0 && positionMs in 0 until skip.introEndSec * 1000L) {
+                hasSkippedIntro = true
+                seekToTime(skip.introEndSec * 1000L)
+                showShortcutTip("已自动跳过片头")
+                return
+            }
+
+            if (!hasSkippedOutro && skip.outroStartSec > 0 && positionMs >= skip.outroStartSec * 1000L) {
+                hasSkippedOutro = true
+                val targetMs =
+                    when {
+                        durationMs <= 0L -> skip.outroEndSec * 1000L
+                        skip.outroEndSec > 0 -> minOf(skip.outroEndSec * 1000L, durationMs - 500L)
+                        else -> durationMs - 500L
+                    }.coerceAtLeast(0L)
+                seekToTime(targetMs)
+                showShortcutTip("已自动跳过片尾")
+            }
         }
 
         /**
@@ -687,6 +736,9 @@ class PlayerViewModel
             playData = null
             stopSeekerUpdater()
             stopDebugInfoUpdater()
+            // 重置自动跳过状态（片头片尾时间从 VideoInfoRepository 按 cid 实时查询）
+            hasSkippedIntro = false
+            hasSkippedOutro = false
 
             _uiState.update {
                 it.copy(
@@ -1327,13 +1379,16 @@ class PlayerViewModel
 
         private fun updateSeekerState() {
             val player = videoPlayer ?: return
+            val positionMs = player.currentPosition.coerceAtLeast(0L)
+            val durationMs = player.duration.coerceAtLeast(0L)
             _seekerState.update {
                 it.copy(
-                    totalDuration = player.duration.coerceAtLeast(0L),
-                    currentTime = player.currentPosition.coerceAtLeast(0L),
+                    totalDuration = durationMs,
+                    currentTime = positionMs,
                     bufferedPercentage = player.bufferedPercentage,
                 )
             }
+            checkAutoSkip(positionMs = positionMs, durationMs = durationMs)
         }
 
         private fun startClockUpdater() {

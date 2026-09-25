@@ -5,6 +5,7 @@ import bilibili.app.view.v1.viewReq
 import dev.frost819.newbv.biliapi.entity.ApiType
 import dev.frost819.newbv.biliapi.entity.video.VideoDetail
 import dev.frost819.newbv.biliapi.entity.video.VideoPage
+import dev.frost819.newbv.biliapi.entity.video.season.EpisodeSkipTimes
 import dev.frost819.newbv.biliapi.entity.video.season.SeasonDetail
 import dev.frost819.newbv.biliapi.grpc.utils.handleGrpcException
 import dev.frost819.newbv.biliapi.http.BiliHttpApi
@@ -257,4 +258,39 @@ class VideoDetailRepository(
             }
         }
     }
+
+    /**
+     * 获取番剧各分集的片头片尾跳过时间（供播放器自动跳过 OP/ED 使用）。
+     *
+     * 数据来自 Web 剧集详情接口（`/pgc/view/web/season`）的 `skip` 字段；
+     * App gRPC 接口不返回该数据，因此无论偏好接口类型，本方法统一走 Web 接口。
+     *
+     * 请求失败或无数据时返回空 map，调用方应按"无片头片尾数据"降级，绝不影响播放。
+     *
+     * @param epid 番剧分集 ID（seasonId 缺省时用它定位剧集）
+     * @param seasonId 番剧 season ID
+     * @return cid -> 片头片尾时间
+     */
+    suspend fun getPgcSkipTimes(
+        epid: Int? = null,
+        seasonId: Int? = null,
+    ): Map<Long, EpisodeSkipTimes> =
+        runCatching {
+            val webSeasonData =
+                BiliHttpApi
+                    .getWebSeasonInfo(
+                        seasonId = seasonId,
+                        epId = epid,
+                    ).getResponseData()
+            (webSeasonData.episodes + webSeasonData.section.flatMap { it.episodes })
+                .mapNotNull { ep ->
+                    val skip = ep.skip ?: return@mapNotNull null
+                    ep.cid to
+                        EpisodeSkipTimes(
+                            introEnd = skip.op.end,
+                            outroStart = skip.ed.start,
+                            outroEnd = skip.ed.end,
+                        )
+                }.toMap()
+        }.getOrDefault(emptyMap())
 }

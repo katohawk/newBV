@@ -35,6 +35,19 @@ data class VideoSharedState(
 )
 
 /**
+ * 番剧分集的片头片尾时间（秒），用于播放器自动跳过 OP/ED。
+ *
+ * @property introEndSec 片头结束时间，0 表示无片头数据
+ * @property outroStartSec 片尾开始时间，0 表示无片尾数据
+ * @property outroEndSec 片尾结束时间，0 表示未知
+ */
+data class SkipTimeInfo(
+    val introEndSec: Int = 0,
+    val outroStartSec: Int = 0,
+    val outroEndSec: Int = 0,
+)
+
+/**
  * 应用级视频信息共享仓库。
  *
  * 在详情页加载视频详情后，播放器页面通过本仓库获取已缓存的视频列表和详情，
@@ -63,6 +76,11 @@ class VideoInfoRepository
 
         /** 当前视频的共享状态（交互 + 历史）。 */
         val videoSharedState = _videoSharedState.asStateFlow()
+
+        private val _skipTimes = MutableStateFlow<Map<Long, SkipTimeInfo>>(emptyMap())
+
+        /** 番剧分集片头片尾时间（cid -> 时间），由番剧详情页填充，播放器按 cid 查询。 */
+        val skipTimes = _skipTimes.asStateFlow()
 
         /**
          * 更新视频详情（同步相关视频和共享状态）。
@@ -214,11 +232,21 @@ class VideoInfoRepository
             }
         }
 
+        /**
+         * 更新番剧分集片头片尾时间。
+         *
+         * @param times cid -> 片头片尾时间
+         */
+        fun updateSkipTimes(times: Map<Long, SkipTimeInfo>) {
+            _skipTimes.update { times }
+        }
+
         /** 重置所有状态。 */
         fun reset() {
             _videoList.update { emptyList() }
             _videoDetail.update { null }
             _relatedVideos.update { emptyList() }
             _videoSharedState.update { null }
+            _skipTimes.update { emptyMap() }
         }
     }
