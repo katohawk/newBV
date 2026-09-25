@@ -130,6 +130,9 @@ fun QuickEntryButton(
  * 复用 [SmallVideoCard] 的现有视觉样式，混入首页第一批内容；
  * 点击后直接恢复对应入口（视频详情 / 番剧剧集列表 / 指定类型的搜索结果），
  * 不需要重新搜索或手动切换 Tab。
+ *
+ * 按遥控器**菜单键**打开操作面板（不响应长按）：
+ * 第一个图标「置顶」把该入口移到收藏区最前，第二个图标「取消收藏」移除该入口。
  */
 @Composable
 fun QuickEntryCard(
@@ -137,6 +140,9 @@ fun QuickEntryCard(
     navController: NavController,
     modifier: Modifier = Modifier,
 ) {
+    val viewModel: QuickEntryViewModel = hiltViewModel()
+    val context = LocalContext.current
+
     SmallVideoCard(
         modifier = modifier,
         data =
@@ -165,5 +171,16 @@ fun QuickEntryCard(
                     )
             }
         },
+        // 收藏语义为"重复收藏即置顶"：原样重新写入即移到最前
+        onPinToTop = {
+            viewModel.setSaved(entry, true)
+            ToastUtils.show(context, "已置顶到最前")
+        },
+        onRemoveEntry = {
+            viewModel.setSaved(entry, false)
+            ToastUtils.show(context, "已取消首页收藏")
+        },
+        // 仅菜单键打开面板，不响应长按
+        openActionsOnLongPress = false,
     )
 }

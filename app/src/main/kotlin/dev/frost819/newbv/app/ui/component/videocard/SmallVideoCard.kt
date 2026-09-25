@@ -38,6 +38,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
@@ -52,6 +55,19 @@ import dev.frost819.newbv.core.focus.touchClickable
 import dev.frost819.newbv.core.interaction.InputMethod
 import dev.frost819.newbv.core.interaction.currentInputMethod
 import dev.frost819.newbv.data.quickentry.QuickEntry
+
+/**
+ * 卡片快捷操作面板中的单个操作项。
+ *
+ * @property contentDescription 无障碍描述。
+ * @property onAction 点击后执行的操作。
+ * @property icon 操作图标（Composable，由调用方决定 painter 或 vector）。
+ */
+private data class CardAction(
+    val contentDescription: String,
+    val onAction: () -> Unit,
+    val icon: @Composable () -> Unit,
+)
 
 /**
  * 小型视频卡片。
@@ -71,6 +87,10 @@ import dev.frost819.newbv.data.quickentry.QuickEntry
  * @param onGoToDetailPage 详情页回调（null 时不显示按钮）。
  * @param onGoToUpPage UP 主页回调（null 时不显示按钮）。
  * @param onRemoveWatchLater 移除稍后再看回调（null 时不显示按钮）。
+ * @param onPinToTop 置顶到最前回调（首页快捷收藏用，null 时不显示按钮）。
+ * @param onRemoveEntry 取消首页收藏回调（null 时不显示按钮）。
+ * @param openActionsOnLongPress 是否允许长按/长按 OK 打开操作面板；
+ *   遥控器菜单键始终可以打开。快捷收藏卡片传 false，仅菜单键触发。
  */
 @Composable
 fun SmallVideoCard(
@@ -82,17 +102,84 @@ fun SmallVideoCard(
     onGoToUpPage: (() -> Unit)? = null,
     onRemoveWatchLater: (() -> Unit)? = null,
     quickEntry: QuickEntry? = null,
+    onPinToTop: (() -> Unit)? = null,
+    onRemoveEntry: (() -> Unit)? = null,
+    openActionsOnLongPress: Boolean = true,
 ) {
     var showActions by remember { mutableStateOf(false) }
     var releaseLongPress by remember { mutableStateOf(false) }
     val firstButtonRequester = remember { FocusRequester() }
     val isTouchMode = currentInputMethod() == InputMethod.Touch
 
-    val hasAnyAction =
-        onAddWatchLater != null ||
-            onGoToDetailPage != null ||
-            onGoToUpPage != null ||
-            onRemoveWatchLater != null
+    // 操作面板按钮列表：置顶优先（快捷收藏主操作），其余保持原有顺序。
+    // 统一走列表渲染，首个按钮承担 D-Pad 长按释放的防误触守卫。
+    val actions =
+        remember(onPinToTop, onGoToUpPage, onRemoveWatchLater, onAddWatchLater, onRemoveEntry, onGoToDetailPage) {
+            buildList {
+                onPinToTop?.let {
+                    add(
+                        CardAction(
+                            contentDescription = "置顶到最前",
+                            onAction = it,
+                        ) {
+                            Icon(imageVector = Icons.Filled.PushPin, contentDescription = null)
+                        },
+                    )
+                }
+                onGoToUpPage?.let {
+                    add(
+                        CardAction(
+                            contentDescription = "UP主主页",
+                            onAction = it,
+                        ) {
+                            Icon(painter = painterResource(id = R.drawable.contact_page_24px), contentDescription = null)
+                        },
+                    )
+                }
+                onRemoveWatchLater?.let {
+                    add(
+                        CardAction(
+                            contentDescription = "移除稍后再看",
+                            onAction = it,
+                        ) {
+                            Icon(painter = painterResource(id = R.drawable.remove_from_list), contentDescription = null)
+                        },
+                    )
+                }
+                onAddWatchLater?.let {
+                    add(
+                        CardAction(
+                            contentDescription = "稍后再看",
+                            onAction = it,
+                        ) {
+                            Icon(painter = painterResource(id = R.drawable.add_to_list), contentDescription = null)
+                        },
+                    )
+                }
+                onRemoveEntry?.let {
+                    add(
+                        CardAction(
+                            contentDescription = "取消首页收藏",
+                            onAction = it,
+                        ) {
+                            Icon(imageVector = Icons.Outlined.StarBorder, contentDescription = null)
+                        },
+                    )
+                }
+                onGoToDetailPage?.let {
+                    add(
+                        CardAction(
+                            contentDescription = "详情",
+                            onAction = it,
+                        ) {
+                            Icon(painter = painterResource(id = R.drawable.info_24px), contentDescription = null)
+                        },
+                    )
+                }
+            }
+        }
+
+    val hasAnyAction = actions.isNotEmpty()
 
     BackHandler(enabled = showActions) {
         showActions = false
@@ -110,7 +197,7 @@ fun SmallVideoCard(
         Card(
             onClick = { if (!showActions) onClick() },
             onLongClick = {
-                if (hasAnyAction) showActions = true
+                if (openActionsOnLongPress && hasAnyAction) showActions = true
             },
             modifier =
             Modifier
@@ -118,7 +205,7 @@ fun SmallVideoCard(
                 .aspectRatio(1.6f)
                 .touchClickable(
                     onClick = { if (!showActions) onClick() },
-                    onLongClick = { if (hasAnyAction) showActions = true },
+                    onLongClick = { if (openActionsOnLongPress && hasAnyAction) showActions = true },
                 ).onFocusChanged { focusState ->
                     if (!focusState.hasFocus) showActions = false
                 }.onKeyEvent { event ->
@@ -152,147 +239,28 @@ fun SmallVideoCard(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    onGoToUpPage?.let { action ->
-                        IconButton(
-                            onClick = {
-                                if (!isTouchMode && !releaseLongPress) {
-                                    releaseLongPress = true
-                                    return@IconButton
-                                }
-                                action()
-                            },
-                            modifier =
-                                Modifier
-                                    .focusRequester(firstButtonRequester)
-                                    .touchClickable(onClick = {
-                                        if (!isTouchMode && !releaseLongPress) {
-                                            releaseLongPress = true
-                                        } else {
-                                            action()
-                                        }
-                                    }),
-                        ) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.contact_page_24px),
-                                contentDescription = "UP主主页",
-                            )
+                    actions.forEachIndexed { index, action ->
+                        val isFirst = index == 0
+                        val guardedClick = {
+                            if (!isTouchMode && isFirst && !releaseLongPress) {
+                                // D-Pad 长按 OK 打开面板后，第一次 OK 只解除守卫，不触发操作
+                                releaseLongPress = true
+                            } else {
+                                action.onAction()
+                            }
                         }
-                    }
-
-                    onRemoveWatchLater?.let { action ->
-                        val removeIsFirst = onGoToUpPage == null
                         IconButton(
-                            onClick = {
-                                if (!isTouchMode && removeIsFirst && !releaseLongPress) {
-                                    releaseLongPress = true
-                                    return@IconButton
-                                }
-                                action()
-                            },
+                            onClick = guardedClick,
                             modifier =
-                                if (removeIsFirst) {
+                                if (isFirst) {
                                     Modifier
                                         .focusRequester(firstButtonRequester)
-                                        .touchClickable(onClick = {
-                                            if (!isTouchMode && removeIsFirst && !releaseLongPress) {
-                                                releaseLongPress = true
-                                            } else {
-                                                action()
-                                            }
-                                        })
+                                        .touchClickable(onClick = guardedClick)
                                 } else {
-                                    Modifier.touchClickable(onClick = {
-                                        if (!isTouchMode && removeIsFirst && !releaseLongPress) {
-                                            releaseLongPress = true
-                                        } else {
-                                            action()
-                                        }
-                                    })
+                                    Modifier.touchClickable(onClick = guardedClick)
                                 },
                         ) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.remove_from_list),
-                                contentDescription = "移除稍后再看",
-                            )
-                        }
-                    }
-
-                    onAddWatchLater?.let { action ->
-                        val addIsFirst = onGoToUpPage == null && onRemoveWatchLater == null
-                        IconButton(
-                            onClick = {
-                                if (!isTouchMode && addIsFirst && !releaseLongPress) {
-                                    releaseLongPress = true
-                                    return@IconButton
-                                }
-                                action()
-                            },
-                            modifier =
-                                if (addIsFirst) {
-                                    Modifier
-                                        .focusRequester(firstButtonRequester)
-                                        .touchClickable(onClick = {
-                                            if (!isTouchMode && addIsFirst && !releaseLongPress) {
-                                                releaseLongPress = true
-                                            } else {
-                                                action()
-                                            }
-                                        })
-                                } else {
-                                    Modifier.touchClickable(onClick = {
-                                        if (!isTouchMode && addIsFirst && !releaseLongPress) {
-                                            releaseLongPress = true
-                                        } else {
-                                            action()
-                                        }
-                                    })
-                                },
-                        ) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.add_to_list),
-                                contentDescription = "稍后再看",
-                            )
-                        }
-                    }
-
-                    onGoToDetailPage?.let { action ->
-                        val detailIsFirst =
-                            onGoToUpPage == null &&
-                                onRemoveWatchLater == null &&
-                                onAddWatchLater == null
-                        IconButton(
-                            onClick = {
-                                if (!isTouchMode && detailIsFirst && !releaseLongPress) {
-                                    releaseLongPress = true
-                                    return@IconButton
-                                }
-                                action()
-                            },
-                            modifier =
-                                if (detailIsFirst) {
-                                    Modifier
-                                        .focusRequester(firstButtonRequester)
-                                        .touchClickable(onClick = {
-                                            if (!isTouchMode && detailIsFirst && !releaseLongPress) {
-                                                releaseLongPress = true
-                                            } else {
-                                                action()
-                                            }
-                                        })
-                                } else {
-                                    Modifier.touchClickable(onClick = {
-                                        if (!isTouchMode && detailIsFirst && !releaseLongPress) {
-                                            releaseLongPress = true
-                                        } else {
-                                            action()
-                                        }
-                                    })
-                                },
-                        ) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.info_24px),
-                                contentDescription = "详情",
-                            )
+                            action.icon()
                         }
                     }
                 }
