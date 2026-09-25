@@ -26,11 +26,11 @@ import java.io.File
 /**
  * GitHub Releases API 封装。
  *
- * 用于检查更新和下载 APK。仓库地址：`Frost819/newBV`。
+ * 用于检查更新和下载 APK。仓库地址：`katohawk/newBV`。
  * 下载通过 `ghfast.top` 代理加速国内访问。
  */
 object GithubApi {
-    private const val OWNER = "Frost819"
+    private const val OWNER = "katohawk"
     private const val REPO = "newBV"
 
     private val json =
