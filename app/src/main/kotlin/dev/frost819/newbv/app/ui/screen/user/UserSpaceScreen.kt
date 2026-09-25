@@ -37,6 +37,7 @@ import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import dev.frost819.newbv.app.ui.component.ListFooterTip
 import dev.frost819.newbv.app.ui.component.TvLazyVerticalGrid
+import dev.frost819.newbv.app.ui.component.buttons.QuickEntryButton
 import dev.frost819.newbv.app.ui.component.focusSaverItem
 import dev.frost819.newbv.app.ui.component.rememberFocusSaver
 import dev.frost819.newbv.app.ui.component.videocard.SmallVideoCard
@@ -48,6 +49,8 @@ import dev.frost819.newbv.app.util.toWanString
 import dev.frost819.newbv.app.viewmodel.common.CollectWatchLaterEffects
 import dev.frost819.newbv.app.viewmodel.common.WatchLaterViewModel
 import dev.frost819.newbv.app.viewmodel.user.UserSpaceViewModel
+import dev.frost819.newbv.data.quickentry.QuickEntry
+import dev.frost819.newbv.data.quickentry.QuickEntryType
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 
@@ -113,7 +116,7 @@ private fun UserSpaceScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
-            UserSpaceHeader(state = state)
+            UserSpaceHeader(state = state, mid = mid)
         }
 
         itemsIndexed(
@@ -167,7 +170,10 @@ private fun UserSpaceScreen(
 }
 
 @Composable
-private fun UserSpaceHeader(state: dev.frost819.newbv.app.viewmodel.user.UserSpaceUiState) {
+private fun UserSpaceHeader(
+    state: dev.frost819.newbv.app.viewmodel.user.UserSpaceUiState,
+    mid: Long,
+) {
     Row(
         modifier =
             Modifier
@@ -198,5 +204,15 @@ private fun UserSpaceHeader(state: dev.frost819.newbv.app.viewmodel.user.UserSpa
                 overflow = TextOverflow.Ellipsis,
             )
         }
+
+        // 收藏 UP 主到首页：下次从首页直达该 UP 主投稿列表
+        QuickEntryButton(
+            entry =
+                QuickEntry(
+                    type = QuickEntryType.UP,
+                    title = state.name,
+                    mid = mid,
+                ),
+        )
     }
 }

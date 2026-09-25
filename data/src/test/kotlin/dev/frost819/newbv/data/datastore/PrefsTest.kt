@@ -73,13 +73,13 @@ class PrefsTest {
     }
 
     @Test
-    fun `default apiType is Web`() {
-        assertThat(Prefs.apiType).isEqualTo(ApiType.Web)
+    fun `default apiType is App`() {
+        assertThat(Prefs.apiType).isEqualTo(ApiType.App)
     }
 
     @Test
-    fun `default quality is R1080P`() {
-        assertThat(Prefs.defaultQuality).isEqualTo(Resolution.R1080P)
+    fun `default quality is R4K`() {
+        assertThat(Prefs.defaultQuality).isEqualTo(Resolution.R4K)
     }
 
     @Test
@@ -103,8 +103,8 @@ class PrefsTest {
     }
 
     @Test
-    fun `default danmakuScale is 1_75`() {
-        assertThat(Prefs.defaultDanmakuScale).isEqualTo(1.75f)
+    fun `default danmakuScale is 1_25`() {
+        assertThat(Prefs.defaultDanmakuScale).isEqualTo(1.25f)
     }
 
     @Test
@@ -113,8 +113,8 @@ class PrefsTest {
     }
 
     @Test
-    fun `default danmakuArea is 0_5`() {
-        assertThat(Prefs.defaultDanmakuArea).isEqualTo(0.5f)
+    fun `default danmakuArea is 0_2`() {
+        assertThat(Prefs.defaultDanmakuArea).isEqualTo(0.2f)
     }
 
     @Test
@@ -138,8 +138,8 @@ class PrefsTest {
     }
 
     @Test
-    fun `default showVideoInfo is true`() {
-        assertThat(Prefs.showVideoInfo).isTrue()
+    fun `default showVideoInfo is false`() {
+        assertThat(Prefs.showVideoInfo).isFalse()
     }
 
     @Test
@@ -158,8 +158,8 @@ class PrefsTest {
     }
 
     @Test
-    fun `default firstHomeTopNavItem is Dynamics`() {
-        assertThat(Prefs.firstHomeTopNavItem).isEqualTo(HomeTopNavItem.Dynamics)
+    fun `default firstHomeTopNavItem is Recommend`() {
+        assertThat(Prefs.firstHomeTopNavItem).isEqualTo(HomeTopNavItem.Recommend)
     }
 
     @Test
@@ -173,8 +173,8 @@ class PrefsTest {
     }
 
     @Test
-    fun `default themeMode is FollowSystem`() {
-        assertThat(Prefs.themeMode).isEqualTo(ThemeMode.FollowSystem)
+    fun `default themeMode is Dark`() {
+        assertThat(Prefs.themeMode).isEqualTo(ThemeMode.Dark)
     }
 
     @Test

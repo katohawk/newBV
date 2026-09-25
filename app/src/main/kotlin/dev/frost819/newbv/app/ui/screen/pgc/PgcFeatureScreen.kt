@@ -64,6 +64,7 @@ import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import dev.frost819.newbv.app.ui.component.FocusSaver
 import dev.frost819.newbv.app.ui.component.LoadingTip
+import dev.frost819.newbv.app.ui.component.buttons.QuickEntryButton
 import dev.frost819.newbv.app.ui.component.dialog.EpisodeGridButton
 import dev.frost819.newbv.app.ui.component.dialog.EpisodeListDialog
 import dev.frost819.newbv.app.ui.component.rememberFocusSaver
@@ -77,6 +78,8 @@ import dev.frost819.newbv.biliapi.entity.video.season.Episode
 import dev.frost819.newbv.biliapi.entity.video.season.SeasonDetail
 import dev.frost819.newbv.core.focus.focusInvertedColors
 import dev.frost819.newbv.core.focus.touchClickable
+import dev.frost819.newbv.data.quickentry.QuickEntry
+import dev.frost819.newbv.data.quickentry.QuickEntryType
 
 /** 集数超过该值时显示网格快速选集按钮。 */
 private const val SEASON_EPISODE_DIALOG_THRESHOLD = 20
@@ -383,6 +386,16 @@ private fun SeasonInfoHeader(
                         Modifier
                             .focusRequester(followFocusRequester)
                             .onFocusChanged { if (it.hasFocus) focusSaver.saveFocusedKey("follow") },
+                )
+                // 收藏到首页：保存该番剧剧集列表入口，重启后从首页直达
+                QuickEntryButton(
+                    entry =
+                        QuickEntry(
+                            type = QuickEntryType.SEASON,
+                            title = detail.title,
+                            cover = detail.cover,
+                            seasonId = detail.seasonId.toLong(),
+                        ),
                 )
             }
         }

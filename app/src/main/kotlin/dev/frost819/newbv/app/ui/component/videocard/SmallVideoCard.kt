@@ -28,6 +28,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,9 +47,11 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import dev.frost819.newbv.R
+import dev.frost819.newbv.app.ui.component.buttons.QuickEntryButton
 import dev.frost819.newbv.core.focus.touchClickable
 import dev.frost819.newbv.core.interaction.InputMethod
 import dev.frost819.newbv.core.interaction.currentInputMethod
+import dev.frost819.newbv.data.quickentry.QuickEntry
 
 /**
  * 小型视频卡片。
@@ -74,6 +81,7 @@ fun SmallVideoCard(
     onGoToDetailPage: (() -> Unit)? = null,
     onGoToUpPage: (() -> Unit)? = null,
     onRemoveWatchLater: (() -> Unit)? = null,
+    quickEntry: QuickEntry? = null,
 ) {
     var showActions by remember { mutableStateOf(false) }
     var releaseLongPress by remember { mutableStateOf(false) }
@@ -105,15 +113,26 @@ fun SmallVideoCard(
                 if (hasAnyAction) showActions = true
             },
             modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1.6f)
-                    .touchClickable(
-                        onClick = { if (!showActions) onClick() },
-                        onLongClick = { if (hasAnyAction) showActions = true },
-                    ).onFocusChanged { focusState ->
-                        if (!focusState.hasFocus) showActions = false
-                    },
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1.6f)
+                .touchClickable(
+                    onClick = { if (!showActions) onClick() },
+                    onLongClick = { if (hasAnyAction) showActions = true },
+                ).onFocusChanged { focusState ->
+                    if (!focusState.hasFocus) showActions = false
+                }.onKeyEvent { event ->
+                    // 遥控器菜单键与长按等效：弹出/收起快捷操作面板；
+                    // 消费事件后不会再冒泡到 HomeContent 触发刷新
+                    if (event.key == Key.Menu && event.type == KeyEventType.KeyUp && hasAnyAction) {
+                        showActions = !showActions
+                        // 菜单键打开时无需长按防误触保护
+                        releaseLongPress = showActions
+                        true
+                    } else {
+                        false
+                    }
+                },
             shape = CardDefaults.shape(MaterialTheme.shapes.large),
             border =
                 CardDefaults.border(
@@ -133,7 +152,7 @@ fun SmallVideoCard(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    onRemoveWatchLater?.let { action ->
+                    onGoToUpPage?.let { action ->
                         IconButton(
                             onClick = {
                                 if (!isTouchMode && !releaseLongPress) {
@@ -154,6 +173,44 @@ fun SmallVideoCard(
                                     }),
                         ) {
                             Icon(
+                                painter = painterResource(id = R.drawable.contact_page_24px),
+                                contentDescription = "UP主主页",
+                            )
+                        }
+                    }
+
+                    onRemoveWatchLater?.let { action ->
+                        val removeIsFirst = onGoToUpPage == null
+                        IconButton(
+                            onClick = {
+                                if (!isTouchMode && removeIsFirst && !releaseLongPress) {
+                                    releaseLongPress = true
+                                    return@IconButton
+                                }
+                                action()
+                            },
+                            modifier =
+                                if (removeIsFirst) {
+                                    Modifier
+                                        .focusRequester(firstButtonRequester)
+                                        .touchClickable(onClick = {
+                                            if (!isTouchMode && removeIsFirst && !releaseLongPress) {
+                                                releaseLongPress = true
+                                            } else {
+                                                action()
+                                            }
+                                        })
+                                } else {
+                                    Modifier.touchClickable(onClick = {
+                                        if (!isTouchMode && removeIsFirst && !releaseLongPress) {
+                                            releaseLongPress = true
+                                        } else {
+                                            action()
+                                        }
+                                    })
+                                },
+                        ) {
+                            Icon(
                                 painter = painterResource(id = R.drawable.remove_from_list),
                                 contentDescription = "移除稍后再看",
                             )
@@ -161,7 +218,7 @@ fun SmallVideoCard(
                     }
 
                     onAddWatchLater?.let { action ->
-                        val addIsFirst = onRemoveWatchLater == null
+                        val addIsFirst = onGoToUpPage == null && onRemoveWatchLater == null
                         IconButton(
                             onClick = {
                                 if (!isTouchMode && addIsFirst && !releaseLongPress) {
@@ -199,7 +256,10 @@ fun SmallVideoCard(
                     }
 
                     onGoToDetailPage?.let { action ->
-                        val detailIsFirst = onRemoveWatchLater == null && onAddWatchLater == null
+                        val detailIsFirst =
+                            onGoToUpPage == null &&
+                                onRemoveWatchLater == null &&
+                                onAddWatchLater == null
                         IconButton(
                             onClick = {
                                 if (!isTouchMode && detailIsFirst && !releaseLongPress) {
@@ -235,47 +295,6 @@ fun SmallVideoCard(
                             )
                         }
                     }
-
-                    onGoToUpPage?.let { action ->
-                        val upIsFirst =
-                            onRemoveWatchLater == null &&
-                                onAddWatchLater == null &&
-                                onGoToDetailPage == null
-                        IconButton(
-                            onClick = {
-                                if (!isTouchMode && upIsFirst && !releaseLongPress) {
-                                    releaseLongPress = true
-                                    return@IconButton
-                                }
-                                action()
-                            },
-                            modifier =
-                                if (upIsFirst) {
-                                    Modifier
-                                        .focusRequester(firstButtonRequester)
-                                        .touchClickable(onClick = {
-                                            if (!isTouchMode && upIsFirst && !releaseLongPress) {
-                                                releaseLongPress = true
-                                            } else {
-                                                action()
-                                            }
-                                        })
-                                } else {
-                                    Modifier.touchClickable(onClick = {
-                                        if (!isTouchMode && upIsFirst && !releaseLongPress) {
-                                            releaseLongPress = true
-                                        } else {
-                                            action()
-                                        }
-                                    })
-                                },
-                        ) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.contact_page_24px),
-                                contentDescription = "UP主主页",
-                            )
-                        }
-                    }
                 }
             } else {
                 CardCover(
@@ -294,6 +313,8 @@ fun SmallVideoCard(
             upName = data.upName,
             pubTime = data.pubTime,
         )
+
+        quickEntry?.let { entry -> QuickEntryButton(entry) }
     }
 }
 

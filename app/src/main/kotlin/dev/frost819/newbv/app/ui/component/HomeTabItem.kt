@@ -18,5 +18,7 @@ data class HomeTabItem(
             HomeTopNavItem.Dynamics -> "动态"
             HomeTopNavItem.Recommend -> "推荐"
             HomeTopNavItem.Popular -> "热门"
+            HomeTopNavItem.History -> "历史"
+            HomeTopNavItem.ToView -> "稍后再看"
         }
 }

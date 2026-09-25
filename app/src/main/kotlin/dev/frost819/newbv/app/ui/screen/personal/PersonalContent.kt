@@ -21,7 +21,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -83,20 +83,21 @@ fun PersonalContent(
             )
         },
     ) { innerPadding ->
-        Box(
-            modifier =
-                Modifier
-                    .padding(innerPadding)
-                    .onFocusChanged { focusOnContent = it.hasFocus }
-                    .onPreviewKeyEvent { event ->
-                        if (event.key == Key.Menu && event.type == KeyEventType.KeyUp) {
-                            viewModel.refresh(selectedTab)
-                            navFocusRequester.requestFocus()
-                            return@onPreviewKeyEvent true
-                        }
-                        false
-                    },
-        ) {
+    Box(
+        modifier =
+            Modifier
+                .padding(innerPadding)
+                .onFocusChanged { focusOnContent = it.hasFocus }
+                // 菜单键刷新当前 Tab；若焦点在视频卡片上，卡片会先消费该键（弹出操作面板）
+                .onKeyEvent { event ->
+                    if (event.key == Key.Menu && event.type == KeyEventType.KeyUp) {
+                        viewModel.refresh(selectedTab)
+                        navFocusRequester.requestFocus()
+                        return@onKeyEvent true
+                    }
+                    false
+                },
+    ) {
             AnimatedContent(
                 targetState = selectedTab,
                 label = "personal-animated-content",

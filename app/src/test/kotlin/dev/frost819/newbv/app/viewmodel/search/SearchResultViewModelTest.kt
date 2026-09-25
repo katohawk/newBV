@@ -13,6 +13,7 @@ import dev.frost819.newbv.biliapi.repositories.SearchTypeResult
 import dev.frost819.newbv.data.datastore.Prefs
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.eq
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -620,6 +621,50 @@ class SearchResultViewModelTest {
             assertThat(viewModel.uiState.value.selectedOrder).isEqualTo(SearchFilterOrderType.MostClicks)
             coVerify(atLeast = initialCallCount) {
                 searchRepo.searchType(any(), any(), any(), any(), any(), any(), any())
+            }
+        }
+
+    @Test
+    fun `search with initial type activates that tab and loads only it`() =
+        runTest(testDispatcher) {
+            viewModel.search("小猪佩奇", SearchType.MediaBangumi)
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            // 不能错误初始化为 Video
+            assertThat(state.activeType).isEqualTo(SearchType.MediaBangumi)
+            assertThat(state.keyword).isEqualTo("小猪佩奇")
+
+            // 指定类型的加载完成
+            val bangumiResult = state.results[SearchType.MediaBangumi]!!
+            assertThat(bangumiResult.items).hasSize(1)
+
+            // 其他类型未发起请求（按需加载，切换 Tab 时再加载）
+            coVerify(exactly = 0) {
+                searchRepo.searchType(any(), eq(SearchType.Video), any(), any(), any(), any(), any())
+            }
+            coVerify(exactly = 0) {
+                searchRepo.searchType(any(), eq(SearchType.BiliUser), any(), any(), any(), any(), any())
+            }
+
+            // 用户手动切换到未加载的 Tab 时按需加载
+            viewModel.switchType(SearchType.BiliUser)
+            advanceUntilIdle()
+            assertThat(viewModel.uiState.value.results[SearchType.BiliUser]!!.items).hasSize(1)
+        }
+
+    @Test
+    fun `search without initial type keeps default behavior`() =
+        runTest(testDispatcher) {
+            viewModel.search("普通搜索")
+            advanceUntilIdle()
+
+            assertThat(viewModel.uiState.value.activeType).isEqualTo(SearchType.Video)
+            // 普通搜索仍然加载全部类型
+            SearchType.entries.forEach { type ->
+                coVerify(atLeast = 1) {
+                    searchRepo.searchType(any(), eq(type), any(), any(), any(), any(), any())
+                }
             }
         }
 }

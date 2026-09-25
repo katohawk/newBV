@@ -234,7 +234,7 @@ object Prefs {
     /** 接口类型（Web/App）。 */
     var apiType by pref(
         PrefKeys.apiType,
-        ApiType.Web,
+        ApiType.App,
         save = { it.ordinal },
         restore = { ApiType.fromOrdinal(it) },
     )
@@ -254,7 +254,7 @@ object Prefs {
     /** 默认画质。 */
     var defaultQuality by pref(
         PrefKeys.defaultQuality,
-        Resolution.R1080P,
+        Resolution.R4K,
         save = { it.code },
         restore = { Resolution.fromCode(it) },
     )
@@ -313,7 +313,7 @@ object Prefs {
     )
 
     /** 默认弹幕大小。 */
-    var defaultDanmakuScale by pref(PrefKeys.defaultDanmakuScale, 1.75f)
+    var defaultDanmakuScale by pref(PrefKeys.defaultDanmakuScale, 1.25f)
 
     /** 默认弹幕透明度。 */
     var defaultDanmakuOpacity by pref(PrefKeys.defaultDanmakuOpacity, 0.7f)
@@ -322,7 +322,7 @@ object Prefs {
     var defaultDanmakuSpeedFactor by pref(PrefKeys.defaultDanmakuSpeedFactor, 1f)
 
     /** 默认弹幕显示区域。 */
-    var defaultDanmakuArea by pref(PrefKeys.defaultDanmakuArea, 0.5f)
+    var defaultDanmakuArea by pref(PrefKeys.defaultDanmakuArea, 0.2f)
 
     /** 默认防遮挡蒙版开关。 */
     var defaultDanmakuMask by pref(PrefKeys.defaultDanmakuMask, false)
@@ -349,7 +349,7 @@ object Prefs {
     )
 
     /** 显示视频详情页（关闭后点击直接播放）。 */
-    var showVideoInfo by pref(PrefKeys.showVideoInfo, true)
+    var showVideoInfo by pref(PrefKeys.showVideoInfo, false)
 
     /** 显示常显进度条。 */
     var showPersistentSeek by pref(PrefKeys.showPersistentSeek, false)
@@ -373,7 +373,7 @@ object Prefs {
     /** 首页置顶 Tab。 */
     var firstHomeTopNavItem by pref(
         PrefKeys.firstHomeTopNavItem,
-        HomeTopNavItem.Dynamics,
+        HomeTopNavItem.Recommend,
         save = { it.code },
         restore = { HomeTopNavItem.fromCode(it) },
     )
@@ -392,7 +392,7 @@ object Prefs {
     /** 主题模式（跟随系统/深色/浅色）。 */
     var themeMode by pref(
         PrefKeys.themeMode,
-        ThemeMode.FollowSystem,
+        ThemeMode.Dark,
         save = { it.ordinal },
         restore = { ThemeMode.fromOrdinal(it) },
     )
@@ -412,9 +412,9 @@ object Prefs {
         get() =
             (delegateMap[PrefKeys.themeMode] as? PrefDelegate<ThemeMode, Int>)
                 ?.flow
-                ?.map { ThemeMode.fromOrdinal(it as? Int ?: 0) }
-                ?.stateIn(scope, SharingStarted.Eagerly, ThemeMode.FollowSystem)
-                ?: MutableStateFlow(ThemeMode.FollowSystem)
+                ?.map { ThemeMode.fromOrdinal(it as? Int ?: 1) }
+                ?.stateIn(scope, SharingStarted.Eagerly, ThemeMode.Dark)
+                ?: MutableStateFlow(ThemeMode.Dark)
 
     /** Density Flow（实时响应设置变更）。 */
     val densityFlow: StateFlow<Float>

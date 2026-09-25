@@ -12,6 +12,8 @@ import dev.frost819.newbv.biliapi.repositories.RecommendVideoRepository
 import dev.frost819.newbv.biliapi.repositories.UserRepository
 import dev.frost819.newbv.core.log.Loggers
 import dev.frost819.newbv.data.datastore.Prefs
+import dev.frost819.newbv.data.quickentry.QuickEntry
+import dev.frost819.newbv.data.quickentry.QuickEntryRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +36,8 @@ private const val LOAD_TIMEOUT_MS = 10_000L
  */
 data class HomeUiState(
     val recommendItems: List<UgcItem> = emptyList(),
+    /** 初始加载的推荐条数；收藏只与这批内容去重，不影响后续分页。 */
+    val recommendFirstBatchSize: Int = 0,
     val recommendLoading: Boolean = false,
     val recommendHasMore: Boolean = true,
     val recommendError: Boolean = false,
@@ -45,6 +49,8 @@ data class HomeUiState(
     val dynamicLoading: Boolean = false,
     val dynamicHasMore: Boolean = true,
     val dynamicError: Boolean = false,
+    /** 本地保存的首页快捷收藏（最近收藏在前）。 */
+    val quickEntries: List<QuickEntry> = emptyList(),
     val isLogin: Boolean = false,
     val currentUid: Long = 0L,
 )
@@ -66,6 +72,7 @@ class HomeViewModel
         private val recommendVideoRepository: RecommendVideoRepository,
         private val userRepository: UserRepository,
         private val accountRepository: AccountRepositoryImpl,
+        private val quickEntryRepository: QuickEntryRepository,
     ) : ViewModel() {
         private val logger = Loggers.get("HomeViewModel")
 
@@ -90,6 +97,12 @@ class HomeViewModel
             loadRecommend()
             loadPopular()
             if (Prefs.isLogin) loadDynamic()
+
+            viewModelScope.launch {
+                quickEntryRepository.entries.collect { entries ->
+                    _uiState.update { it.copy(quickEntries = entries) }
+                }
+            }
 
             viewModelScope.launch {
                 accountRepository.uiState
@@ -161,6 +174,11 @@ class HomeViewModel
                     if (!isFirstLoad || _uiState.value.recommendItems.size >= 24) break
                 }
 
+                // 记录初始批大小，供首页收藏去重使用（只影响第一批展示）
+                if (isFirstLoad) {
+                    _uiState.update { it.copy(recommendFirstBatchSize = it.recommendItems.size) }
+                }
+
                 // 首屏补齐失败时，只要已拿到部分数据就静默停止（避免"部分列表 + 报错"）；
                 // 加载更多失败则照常报错，让底部提示可重试
                 val hasItems = _uiState.value.recommendItems.isNotEmpty()
@@ -175,7 +193,12 @@ class HomeViewModel
         fun refreshRecommend() {
             recommendNextPage = RecommendPage()
             _uiState.update {
-                it.copy(recommendItems = emptyList(), recommendHasMore = true, recommendError = false)
+                it.copy(
+                    recommendItems = emptyList(),
+                    recommendFirstBatchSize = 0,
+                    recommendHasMore = true,
+                    recommendError = false,
+                )
             }
             loadRecommend()
         }
@@ -299,6 +322,10 @@ class HomeViewModel
                 dev.frost819.newbv.data.datastore.HomeTopNavItem.Recommend -> refreshRecommend()
                 dev.frost819.newbv.data.datastore.HomeTopNavItem.Popular -> refreshPopular()
                 dev.frost819.newbv.data.datastore.HomeTopNavItem.Dynamics -> refreshDynamic()
+                // 历史/稍后再看 Tab 由 PersonalViewModel 管理，见 HomeContent
+                dev.frost819.newbv.data.datastore.HomeTopNavItem.History,
+                dev.frost819.newbv.data.datastore.HomeTopNavItem.ToView,
+                -> Unit
             }
         }
 
@@ -312,6 +339,10 @@ class HomeViewModel
                 dev.frost819.newbv.data.datastore.HomeTopNavItem.Recommend -> loadRecommend()
                 dev.frost819.newbv.data.datastore.HomeTopNavItem.Popular -> loadPopular()
                 dev.frost819.newbv.data.datastore.HomeTopNavItem.Dynamics -> loadDynamic()
+                // 历史/稍后再看 Tab 由 PersonalViewModel 管理，见 HomeContent
+                dev.frost819.newbv.data.datastore.HomeTopNavItem.History,
+                dev.frost819.newbv.data.datastore.HomeTopNavItem.ToView,
+                -> Unit
             }
         }
 

@@ -16,6 +16,7 @@ import dev.frost819.newbv.biliapi.entity.user.DynamicVideoData
 import dev.frost819.newbv.biliapi.repositories.RecommendVideoRepository
 import dev.frost819.newbv.biliapi.repositories.UserRepository
 import dev.frost819.newbv.data.datastore.Prefs
+import dev.frost819.newbv.data.quickentry.QuickEntryRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -53,6 +54,7 @@ class HomeViewModelTest {
     private lateinit var recommendRepo: RecommendVideoRepository
     private lateinit var userRepo: UserRepository
     private lateinit var accountRepo: AccountRepositoryImpl
+    private lateinit var quickEntryRepo: QuickEntryRepository
     private lateinit var viewModel: HomeViewModel
 
     companion object {
@@ -113,7 +115,9 @@ class HomeViewModelTest {
         recommendRepo = mockk()
         userRepo = mockk()
         accountRepo = mockk()
+        quickEntryRepo = mockk()
         every { accountRepo.uiState } returns MutableStateFlow(AccountUiState())
+        every { quickEntryRepo.entries } returns MutableStateFlow(emptyList())
 
         coEvery { recommendRepo.getRecommendVideos(any(), any()) } returns
             RecommendData(
@@ -135,7 +139,7 @@ class HomeViewModelTest {
             )
     }
 
-    private fun createViewModel() = HomeViewModel(recommendRepo, userRepo, accountRepo)
+    private fun createViewModel() = HomeViewModel(recommendRepo, userRepo, accountRepo, quickEntryRepo)
 
     @AfterEach
     fun tearDown() {

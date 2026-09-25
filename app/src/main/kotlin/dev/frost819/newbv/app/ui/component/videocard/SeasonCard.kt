@@ -27,7 +27,10 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
+import dev.frost819.newbv.app.ui.component.buttons.QuickEntryButton
 import dev.frost819.newbv.core.focus.touchClickable
+import dev.frost819.newbv.data.quickentry.QuickEntry
+import dev.frost819.newbv.data.quickentry.QuickEntryType
 
 /**
  * 番剧/影视卡片。
@@ -38,6 +41,7 @@ import dev.frost819.newbv.core.focus.touchClickable
  * @param data 卡片数据。
  * @param onClick 点击回调。
  * @param onGoToDetailPage 跳转详情页回调（长按或菜单键）。
+ * @param quickEntry 收藏到首页的入口（默认由卡片数据自动派生，传 null 可隐藏按钮）。
  * @param modifier Modifier。
  */
 @Composable
@@ -46,26 +50,34 @@ fun SeasonCard(
     onClick: () -> Unit,
     onGoToDetailPage: () -> Unit = {},
     modifier: Modifier = Modifier,
+    quickEntry: QuickEntry? =
+        QuickEntry(
+            type = QuickEntryType.SEASON,
+            title = data.title,
+            cover = data.cover,
+            seasonId = data.seasonId.toLong(),
+        ),
 ) {
-    Surface(
-        modifier = modifier.touchClickable(onClick = onClick),
-        onClick = onClick,
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = MaterialTheme.colorScheme.surface,
-                focusedContainerColor = MaterialTheme.colorScheme.surface,
-                pressedContainerColor = MaterialTheme.colorScheme.surface,
-            ),
-        shape = ClickableSurfaceDefaults.shape(shape = MaterialTheme.shapes.large),
-        border =
-            ClickableSurfaceDefaults.border(
-                focusedBorder =
-                    Border(
-                        border = BorderStroke(width = 3.dp, color = MaterialTheme.colorScheme.border),
-                        shape = MaterialTheme.shapes.large,
-                    ),
-            ),
-    ) {
+    Column(modifier = modifier) {
+        Surface(
+            modifier = Modifier.touchClickable(onClick = onClick),
+            onClick = onClick,
+            colors =
+                ClickableSurfaceDefaults.colors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    pressedContainerColor = MaterialTheme.colorScheme.surface,
+                ),
+            shape = ClickableSurfaceDefaults.shape(shape = MaterialTheme.shapes.large),
+            border =
+                ClickableSurfaceDefaults.border(
+                    focusedBorder =
+                        Border(
+                            border = BorderStroke(width = 3.dp, color = MaterialTheme.colorScheme.border),
+                            shape = MaterialTheme.shapes.large,
+                        ),
+                ),
+        ) {
         Column {
             Box(
                 modifier =
@@ -136,5 +148,9 @@ fun SeasonCard(
                 }
             }
         }
+
+        quickEntry?.let { entry -> QuickEntryButton(entry) }
+        }
     }
 }
+

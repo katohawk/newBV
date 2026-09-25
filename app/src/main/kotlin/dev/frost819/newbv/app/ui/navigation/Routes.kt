@@ -53,6 +53,8 @@ data class SeasonPlayerRoute(
 @Serializable
 data class SearchResultRoute(
     val keyword: String,
+    /** 初始搜索类型（SearchType 枚举名）；为空时保持默认 Video 并加载全部类型。 */
+    val searchType: String? = null,
 )
 
 // ── 直播 ──────────────────────────────────────────────────────────────

@@ -27,7 +27,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -115,11 +115,11 @@ fun PgcContent(
                 Modifier
                     .padding(innerPadding)
                     .onFocusChanged { focusOnContent = it.hasFocus }
-                    .onPreviewKeyEvent { event ->
+                    .onKeyEvent { event ->
                         if (event.key == Key.Menu && event.type == KeyEventType.KeyUp) {
                             viewModel.refresh()
                             navFocusRequester.requestFocus()
-                            return@onPreviewKeyEvent true
+                            return@onKeyEvent true
                         }
                         false
                     },

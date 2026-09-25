@@ -48,19 +48,29 @@ class SearchResultViewModel
         /**
          * 设置搜索关键词并启动搜索。
          *
-         * 重置所有分页和结果，对 4 种类型并行加载第一页。
+         * 重置所有分页和结果。未指定 [initialType] 时对全部类型并行加载第一页
+         * （普通搜索的默认行为）；指定时只加载该类型，其余 Tab 在用户切换时按需加载，
+         * 避免为进入某一类结果而无意义地请求全部类型。
          */
-        fun search(keyword: String) {
+        fun search(
+            keyword: String,
+            initialType: SearchType? = null,
+        ) {
             _uiState.update {
                 it.copy(
                     keyword = keyword,
+                    activeType = initialType ?: it.activeType,
                     results =
                         SearchType.entries.associateWith { type ->
                             TypedSearchResult(type = type)
                         },
                 )
             }
-            SearchType.entries.forEach { loadMore(it) }
+            if (initialType != null) {
+                loadMore(initialType)
+            } else {
+                SearchType.entries.forEach { loadMore(it) }
+            }
         }
 
         /**

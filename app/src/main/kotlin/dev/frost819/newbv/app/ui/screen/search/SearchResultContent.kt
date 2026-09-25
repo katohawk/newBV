@@ -48,6 +48,7 @@ import androidx.tv.material3.Text
 import dev.frost819.newbv.app.ui.component.ListFooterTip
 import dev.frost819.newbv.app.ui.component.TopNav
 import dev.frost819.newbv.app.ui.component.TopNavItem
+import dev.frost819.newbv.app.ui.component.buttons.QuickEntryButton
 import dev.frost819.newbv.app.ui.component.focusSaverItem
 import dev.frost819.newbv.app.ui.component.livecard.LiveRoomCard
 import dev.frost819.newbv.app.ui.component.livecard.LiveRoomCardData
@@ -72,6 +73,8 @@ import dev.frost819.newbv.app.viewmodel.common.WatchLaterViewModel
 import dev.frost819.newbv.app.viewmodel.search.SearchResultViewModel
 import dev.frost819.newbv.biliapi.repositories.SearchType
 import dev.frost819.newbv.core.focus.touchClickable
+import dev.frost819.newbv.data.quickentry.QuickEntry
+import dev.frost819.newbv.data.quickentry.QuickEntryType
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 
@@ -105,6 +108,7 @@ fun SearchResultContent(
     viewModel: SearchResultViewModel,
     keyword: String,
     navController: NavController,
+    initialSearchType: SearchType? = null,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val watchLaterViewModel: WatchLaterViewModel = hiltViewModel()
@@ -134,9 +138,9 @@ fun SearchResultContent(
         runCatching { tabRowFocusRequester.requestFocus() }
     }
 
-    LaunchedEffect(keyword) {
+    LaunchedEffect(keyword, initialSearchType) {
         if (keyword.isNotBlank()) {
-            viewModel.search(keyword)
+            viewModel.search(keyword, initialSearchType)
         }
     }
 
@@ -191,12 +195,24 @@ fun SearchResultContent(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                // 收藏当前搜索条件（关键词 + 类型）到首页
+                QuickEntryButton(
+                    entry =
+                        QuickEntry(
+                            type = QuickEntryType.SEARCH,
+                            title = "$keyword · ${searchTypeLabels[uiState.activeType]}",
+                            keyword = keyword,
+                            searchType = uiState.activeType.name,
+                        ),
+                    modifier = Modifier.padding(start = 16.dp),
+                )
             }
 
             // 5 类 Tab 导航
             TopNav(
                 modifier = Modifier.focusRequester(tabRowFocusRequester),
                 items = SearchType.entries.map { SearchTypeNavItem(it) },
+                selectedIndex = SearchType.entries.indexOf(uiState.activeType),
                 isLargePadding = !focusOnContent,
                 onSelectedChanged = { item ->
                     viewModel.switchType((item as SearchTypeNavItem).type)
@@ -268,6 +284,13 @@ fun SearchResultContent(
                                     navController.navigate(UserSpaceRoute(mid = v.mid, name = v.author))
                                 },
                                 onAddWatchLater = { watchLaterViewModel.addToView(aid = v.aid) },
+                                quickEntry =
+                                    QuickEntry(
+                                        type = QuickEntryType.VIDEO,
+                                        title = cardData.title,
+                                        cover = cardData.cover,
+                                        aid = cardData.avid,
+                                    ),
                             )
                         }
                         is SearchResultItem.PgcItem -> {

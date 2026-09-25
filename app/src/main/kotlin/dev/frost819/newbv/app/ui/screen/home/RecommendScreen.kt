@@ -19,6 +19,7 @@ import androidx.navigation.NavController
 import dev.frost819.newbv.app.ui.component.FocusSaver
 import dev.frost819.newbv.app.ui.component.ListFooterTip
 import dev.frost819.newbv.app.ui.component.TvLazyVerticalGrid
+import dev.frost819.newbv.app.ui.component.buttons.QuickEntryCard
 import dev.frost819.newbv.app.ui.component.focusSaverItem
 import dev.frost819.newbv.app.ui.component.videocard.SmallVideoCard
 import dev.frost819.newbv.app.ui.component.videocard.VideoCardData
@@ -29,6 +30,7 @@ import dev.frost819.newbv.app.util.toWanString
 import dev.frost819.newbv.app.viewmodel.common.CollectWatchLaterEffects
 import dev.frost819.newbv.app.viewmodel.common.WatchLaterViewModel
 import dev.frost819.newbv.app.viewmodel.home.HomeViewModel
+import dev.frost819.newbv.data.quickentry.mergeQuickEntries
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 
@@ -50,6 +52,16 @@ fun RecommendScreen(
     val watchLaterViewModel: WatchLaterViewModel = hiltViewModel()
 
     CollectWatchLaterEffects(watchLaterViewModel)
+
+    // 收藏插入第一批推荐之前，与第一批内容去重；后续分页不受影响
+    val feed =
+        remember(state.recommendItems, state.quickEntries, state.recommendFirstBatchSize) {
+            mergeQuickEntries(
+                favorites = state.quickEntries,
+                recommendationKeys = state.recommendItems.map { "video:${it.aid}" },
+                firstBatchSize = state.recommendFirstBatchSize,
+            )
+        }
 
     LaunchedEffect(gridState) {
         snapshotFlow {
@@ -73,39 +85,49 @@ fun RecommendScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         itemsIndexed(
-            items = state.recommendItems,
+            items = feed,
             key = { index, _ -> index },
-        ) { index, item ->
-            val cardData =
-                remember(item) {
-                    VideoCardData(
-                        avid = item.aid,
-                        bvid = item.bvid,
-                        title = item.title,
-                        cover = item.cover,
-                        playString = item.play.takeIf { it != -1 }.toWanString(),
-                        danmakuString = item.danmaku.takeIf { it != -1 }.toWanString(),
-                        timeString = (item.duration * 1000L).formatHourMinSec(),
-                        upName = item.author,
-                        upMid = item.authorMid,
-                        pubTime = item.pubTime,
-                    )
-                }
-            SmallVideoCard(
-                modifier = Modifier.focusSaverItem(focusSaver, "rcmd_$index"),
-                data = cardData,
-                onClick = {
-                    navController.navigateFromVideoCard(cardData)
-                },
-                onGoToDetailPage = {
-                    navController.navigateFromVideoCard(cardData, forceDetail = true)
-                },
-                onGoToUpPage =
-                    item.authorMid?.let { mid ->
-                        { navController.navigate(UserSpaceRoute(mid = mid, name = item.author)) }
+        ) { index, feedItem ->
+            val favorite = feedItem.favorite
+            if (favorite != null) {
+                QuickEntryCard(
+                    entry = favorite,
+                    navController = navController,
+                    modifier = Modifier.focusSaverItem(focusSaver, "rcmd_$index"),
+                )
+            } else {
+                val item = state.recommendItems[feedItem.recommendationIndex]
+                val cardData =
+                    remember(item) {
+                        VideoCardData(
+                            avid = item.aid,
+                            bvid = item.bvid,
+                            title = item.title,
+                            cover = item.cover,
+                            playString = item.play.takeIf { it != -1 }.toWanString(),
+                            danmakuString = item.danmaku.takeIf { it != -1 }.toWanString(),
+                            timeString = (item.duration * 1000L).formatHourMinSec(),
+                            upName = item.author,
+                            upMid = item.authorMid,
+                            pubTime = item.pubTime,
+                        )
+                    }
+                SmallVideoCard(
+                    modifier = Modifier.focusSaverItem(focusSaver, "rcmd_$index"),
+                    data = cardData,
+                    onClick = {
+                        navController.navigateFromVideoCard(cardData)
                     },
-                onAddWatchLater = { watchLaterViewModel.addToView(aid = item.aid) },
-            )
+                    onGoToDetailPage = {
+                        navController.navigateFromVideoCard(cardData, forceDetail = true)
+                    },
+                    onGoToUpPage =
+                        item.authorMid?.let { mid ->
+                            { navController.navigate(UserSpaceRoute(mid = mid, name = item.author)) }
+                        },
+                    onAddWatchLater = { watchLaterViewModel.addToView(aid = item.aid) },
+                )
+            }
         }
 
         item(span = { GridItemSpan(maxLineSpan) }) {

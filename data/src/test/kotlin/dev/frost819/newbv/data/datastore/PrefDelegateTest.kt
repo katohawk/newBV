@@ -131,19 +131,19 @@ class PrefDelegateTest {
     @Test
     fun `themeModeFlow returns StateFlow with default value`() {
         val flow = Prefs.themeModeFlow
-        assertThat(flow.value).isEqualTo(ThemeMode.FollowSystem)
+        assertThat(flow.value).isEqualTo(ThemeMode.Dark)
     }
 
     @Test
     fun `themeModeFlow reflects changes`() =
         runBlocking {
             val flow = Prefs.themeModeFlow
-            assertThat(flow.value).isEqualTo(ThemeMode.FollowSystem)
+            assertThat(flow.value).isEqualTo(ThemeMode.Dark)
 
-            Prefs.themeMode = ThemeMode.Dark
+            Prefs.themeMode = ThemeMode.Light
             delay(200)
 
-            assertThat(flow.value).isEqualTo(ThemeMode.Dark)
+            assertThat(flow.value).isEqualTo(ThemeMode.Light)
         }
 
     @Test

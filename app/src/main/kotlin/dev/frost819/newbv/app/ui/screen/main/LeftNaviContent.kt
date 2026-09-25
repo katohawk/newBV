@@ -162,7 +162,13 @@ fun LeftNaviContent(
                 NavigationRailItem(
                     modifier =
                         Modifier
-                            .onFocusChanged { isFocused = it.hasFocus }
+                            .onFocusChanged {
+                                isFocused = it.hasFocus
+                                // 滑动切换：光标落到导航项上即切换页面，无需按 OK
+                                if (it.hasFocus && item != selectedItem) {
+                                    onLeftNaviItemChanged(item)
+                                }
+                            }
                             .selectionIndicator(indicatorColor),
                     onClick = { onLeftNaviItemChanged(item) },
                     selected = isFocused,

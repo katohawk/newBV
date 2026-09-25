@@ -233,6 +233,8 @@ enum class HomeTopNavItem(
     Dynamics(0),
     Recommend(1),
     Popular(2),
+    History(3),
+    ToView(4),
     ;
 
     companion object {

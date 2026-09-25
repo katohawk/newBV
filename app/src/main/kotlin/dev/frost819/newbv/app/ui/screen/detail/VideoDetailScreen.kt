@@ -75,6 +75,7 @@ import dev.frost819.newbv.app.ui.component.FocusSaver
 import dev.frost819.newbv.app.ui.component.LoadingTip
 import dev.frost819.newbv.app.ui.component.comment.CommentDialogMode
 import dev.frost819.newbv.app.ui.component.comment.CommentsDialog
+import dev.frost819.newbv.app.ui.component.buttons.QuickEntryButton
 import dev.frost819.newbv.app.ui.component.dialog.EpisodeListButton
 import dev.frost819.newbv.app.ui.component.dialog.EpisodeListDialog
 import dev.frost819.newbv.app.ui.component.focusSaverItem
@@ -88,6 +89,8 @@ import dev.frost819.newbv.app.ui.navigation.VideoPlayerRoute
 import dev.frost819.newbv.app.ui.navigation.navigateFromVideoCard
 import dev.frost819.newbv.app.util.ToastUtils
 import dev.frost819.newbv.app.util.toWanString
+import dev.frost819.newbv.data.quickentry.QuickEntry
+import dev.frost819.newbv.data.quickentry.QuickEntryType
 import dev.frost819.newbv.app.viewmodel.comment.CommentViewModel
 import dev.frost819.newbv.app.viewmodel.common.CollectWatchLaterEffects
 import dev.frost819.newbv.app.viewmodel.common.WatchLaterViewModel
@@ -758,6 +761,16 @@ private fun VideoInfoHeader(
                         Modifier
                             .focusRequester(commentsFocusRequester)
                             .onFocusChanged { if (it.hasFocus) focusSaver.saveFocusedKey("comments") },
+                )
+                // 收藏到首页：保存该视频入口，重启后从首页直达
+                QuickEntryButton(
+                    entry =
+                        QuickEntry(
+                            type = QuickEntryType.VIDEO,
+                            title = detail.title,
+                            cover = detail.cover,
+                            aid = detail.aid,
+                        ),
                 )
             }
 
