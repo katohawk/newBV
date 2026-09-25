@@ -211,6 +211,7 @@ private fun UserSpaceHeader(
                 QuickEntry(
                     type = QuickEntryType.UP,
                     title = state.name,
+                    cover = state.face,
                     mid = mid,
                 ),
         )
