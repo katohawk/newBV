@@ -9,6 +9,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,7 @@ import dev.frost819.newbv.app.viewmodel.personal.PersonalViewModel
 import dev.frost819.newbv.data.datastore.HomeTopNavItem
 import dev.frost819.newbv.data.datastore.PersonalTopNavItem
 import dev.frost819.newbv.data.datastore.Prefs
+import kotlinx.coroutines.delay
 import androidx.compose.material3.Scaffold as Material3Scaffold
 
 /**
@@ -69,16 +71,61 @@ fun HomeContent(
         }
     var selectedTab by rememberSaveable { mutableStateOf(firstTab) }
     var focusOnContent by remember { mutableStateOf(false) }
+    // 顶部 Tab 区域是否持有焦点（冷启动默认聚焦 TopNav）
+    var navHasFocus by remember { mutableStateOf(false) }
+    // 冷启动默认把光标落到第一个 Tab 的第一个视频卡片上；
+    // 落焦成功或用户已主动移动焦点后置 false，避免后续抢占焦点
+    var pendingInitialFocus by rememberSaveable { mutableStateOf(true) }
     val uiState by viewModel.uiState.collectAsState()
     // 与个人页共享同一 ViewModel 实例（同一导航目的地作用域），数据只加载一次
     val personalViewModel: PersonalViewModel = hiltViewModel()
 
     val tabItems = remember { homeTabs.map { HomeTabItem(it) } }
 
+    // 首个 Tab 的第一个卡片对应的焦点 key（各子页面的 focusSaverItem 命名不同）
+    val firstTabInitialFocusKey =
+        when (firstTab) {
+            HomeTopNavItem.Recommend, HomeTopNavItem.Dynamics -> "rcmd_0"
+            HomeTopNavItem.Popular -> "popular_0"
+            HomeTopNavItem.History -> "history_0"
+            HomeTopNavItem.ToView -> "toview_unwatched_0"
+        }
+
+    // 冷启动：MainScreen 会先聚焦 TopNav；等首屏数据加载出第一张卡片后，
+    // 把焦点移到第一个视频上。若用户已把焦点移入内容区/左侧栏，或手动切换了
+    // Tab，则放弃本次自动落焦，不与用户操作抢占焦点。
+    if (pendingInitialFocus) {
+        LaunchedEffect(firstTab) {
+            // 等 TopNav 至少获得过一次焦点再判断"用户移走了焦点"，
+            // 避免冷启动时 MainScreen 尚未聚焦 TopNav 导致的竞态误判
+            var navFocusSeen = false
+            var attempts = 0
+            while (attempts < 100) {
+                delay(200)
+                attempts++
+                if (focusOnContent || selectedTab != firstTab) break
+                if (!navFocusSeen) {
+                    if (navHasFocus) navFocusSeen = true
+                    continue
+                }
+                if (!navHasFocus) break
+                val focused =
+                    runCatching {
+                        focusSaver.focusRequesterFor(firstTabInitialFocusKey).requestFocus()
+                    }.isSuccess
+                if (focused) break
+            }
+            pendingInitialFocus = false
+        }
+    }
+
     Material3Scaffold(
         topBar = {
             TopNav(
-                modifier = Modifier.focusRequester(navFocusRequester),
+                modifier =
+                    Modifier
+                        .focusRequester(navFocusRequester)
+                        .onFocusChanged { navHasFocus = it.hasFocus },
                 items = tabItems,
                 selectedIndex = tabItems.indexOf(HomeTabItem(selectedTab)),
                 isLargePadding = !focusOnContent,
