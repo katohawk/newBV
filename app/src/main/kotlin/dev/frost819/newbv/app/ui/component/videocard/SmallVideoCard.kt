@@ -39,7 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
@@ -122,7 +122,7 @@ fun SmallVideoCard(
                             contentDescription = "置顶到最前",
                             onAction = it,
                         ) {
-                            Icon(imageVector = Icons.Filled.PushPin, contentDescription = null)
+                            Icon(imageVector = Icons.Filled.VerticalAlignTop, contentDescription = null)
                         },
                     )
                 }

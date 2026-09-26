@@ -330,14 +330,22 @@ class PlayerViewModel
 
             if (!hasSkippedOutro && skip.outroStartSec > 0 && positionMs >= skip.outroStartSec * 1000L) {
                 hasSkippedOutro = true
-                val targetMs =
-                    when {
-                        durationMs <= 0L -> skip.outroEndSec * 1000L
-                        skip.outroEndSec > 0 -> minOf(skip.outroEndSec * 1000L, durationMs - 500L)
-                        else -> durationMs - 500L
-                    }.coerceAtLeast(0L)
-                seekToTime(targetMs)
-                showShortcutTip("已自动跳过片尾")
+                val next = findNextPlayTarget()
+                if (next != null) {
+                    // 进入片尾直接切下一集，不等 ED 播完
+                    playNextTarget(next)
+                    showShortcutTip("已跳过片尾")
+                } else {
+                    // 已是最后一集：跳到片尾结束，走自然播完流程
+                    val targetMs =
+                        when {
+                            durationMs <= 0L -> skip.outroEndSec * 1000L
+                            skip.outroEndSec > 0 -> minOf(skip.outroEndSec * 1000L, durationMs - 500L)
+                            else -> durationMs - 500L
+                        }.coerceAtLeast(0L)
+                    seekToTime(targetMs)
+                    showShortcutTip("已自动跳过片尾")
+                }
             }
         }
 

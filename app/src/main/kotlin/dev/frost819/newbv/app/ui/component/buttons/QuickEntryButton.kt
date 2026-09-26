@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,7 +32,9 @@ import dev.frost819.newbv.app.ui.navigation.PgcFeatureRoute
 import dev.frost819.newbv.app.ui.navigation.SearchResultRoute
 import dev.frost819.newbv.app.ui.navigation.UserSpaceRoute
 import dev.frost819.newbv.app.ui.navigation.VideoDetailRoute
+import dev.frost819.newbv.app.ui.navigation.VideoPlayerRoute
 import dev.frost819.newbv.app.util.ToastUtils
+import dev.frost819.newbv.app.viewmodel.quickentry.QuickEntryUiEffect
 import dev.frost819.newbv.app.viewmodel.quickentry.QuickEntryViewModel
 import dev.frost819.newbv.core.focus.focusInvertedColors
 import dev.frost819.newbv.core.focus.touchClickable
@@ -127,9 +130,11 @@ fun QuickEntryButton(
 /**
  * 首页推荐流中的收藏卡片。
  *
- * 复用 [SmallVideoCard] 的现有视觉样式，混入首页第一批内容；
- * 点击后直接恢复对应入口（视频详情 / 番剧剧集列表 / 指定类型的搜索结果），
- * 不需要重新搜索或手动切换 Tab。
+ * 复用 [SmallVideoCard] 的现有视觉样式，混入首页第一批内容。
+ * 点击行为：
+ * - 视频 / UP 主 / 搜索：直接进入对应页面；
+ * - 番剧：解析服务端观看记录后**直接进入播放器续播**（与详情页"播放"按钮
+ *   同一优先级：上次看到 → 第一集），解析失败时降级跳转番剧详情页。
  *
  * 按遥控器**菜单键**打开操作面板（不响应长按）：
  * 第一个图标「置顶」把该入口移到收藏区最前，第二个图标「取消收藏」移除该入口。
@@ -143,6 +148,26 @@ fun QuickEntryCard(
     val viewModel: QuickEntryViewModel = hiltViewModel()
     val context = LocalContext.current
 
+    // 番剧收藏直连播放器：VM 解析续播分集后发事件，这里负责导航
+    LaunchedEffect(entry.key) {
+        viewModel.uiEffect.collect { effect ->
+            when (effect) {
+                is QuickEntryUiEffect.PlayEpisode ->
+                    navController.navigate(
+                        VideoPlayerRoute(
+                            aid = effect.aid,
+                            cid = effect.cid,
+                            epid = effect.epid?.toLong(),
+                            title = effect.title,
+                            cover = effect.cover,
+                        ),
+                    )
+                is QuickEntryUiEffect.NavigateToSeasonDetail ->
+                    navController.navigate(PgcFeatureRoute(seasonId = effect.seasonId))
+            }
+        }
+    }
+
     SmallVideoCard(
         modifier = modifier,
         data =
@@ -152,7 +177,7 @@ fun QuickEntryCard(
                 cover = entry.cover,
                 upName =
                     when (entry.type) {
-                        QuickEntryType.SEASON -> "番剧 · 剧集列表"
+                        QuickEntryType.SEASON -> "番剧 · 续播"
                         QuickEntryType.SEARCH -> "搜索"
                         QuickEntryType.UP -> "UP 主"
                         else -> "视频"
@@ -161,8 +186,7 @@ fun QuickEntryCard(
         onClick = {
             when (entry.type) {
                 QuickEntryType.VIDEO -> navController.navigate(VideoDetailRoute(aid = entry.aid))
-                QuickEntryType.SEASON ->
-                    navController.navigate(PgcFeatureRoute(seasonId = entry.seasonId))
+                QuickEntryType.SEASON -> viewModel.playSeason(entry)
                 QuickEntryType.UP ->
                     navController.navigate(UserSpaceRoute(mid = entry.mid, name = entry.title))
                 else ->
