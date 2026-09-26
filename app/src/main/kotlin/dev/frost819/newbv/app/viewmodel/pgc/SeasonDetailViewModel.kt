@@ -317,14 +317,16 @@ class SeasonDetailViewModel
 
         /**
          * 在正片和附加分集中查找指定 epid 的分集。
+         *
+         * App gRPC 模式下分集 epid 为 null（id 即 epid），匹配时须回退到 id。
          */
         private fun findEpisodeById(
             detail: SeasonDetail,
             epId: Int,
         ): Episode? {
-            detail.episodes.forEach { if (it.epid == epId) return it }
+            detail.episodes.forEach { if ((it.epid ?: it.id) == epId) return it }
             detail.sections.forEach { section ->
-                section.episodes.forEach { if (it.epid == epId) return it }
+                section.episodes.forEach { if ((it.epid ?: it.id) == epId) return it }
             }
             return null
         }

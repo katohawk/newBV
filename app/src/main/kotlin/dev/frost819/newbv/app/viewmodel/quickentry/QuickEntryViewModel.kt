@@ -139,11 +139,17 @@ class QuickEntryViewModel
             }
         }
 
-        /** 续播分集：优先服务端观看记录的集，其次第一集。 */
+        /**
+         * 续播分集：优先服务端观看记录的集，其次第一集。
+         *
+         * 注意 App gRPC 模式下分集 [Episode.epid] 为 null（只有 id，值即 epid），
+         * 匹配时须回退到 id，否则观看记录永远匹配不上、只会从第一集开播。
+         */
         private fun resolveResumeEpisode(detail: SeasonDetail) =
             detail.userStatus.progress?.let { progress ->
                 val lastEpId = progress.lastEpId
-                (detail.episodes + detail.sections.flatMap { it.episodes }).firstOrNull { it.epid == lastEpId }
+                (detail.episodes + detail.sections.flatMap { it.episodes })
+                    .firstOrNull { (it.epid ?: it.id) == lastEpId }
             } ?: detail.episodes.firstOrNull()
 
         /** 将 DataApiType 映射为 bili-api 的 ApiType。 */
