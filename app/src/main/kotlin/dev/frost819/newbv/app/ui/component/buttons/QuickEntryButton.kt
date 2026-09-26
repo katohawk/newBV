@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,13 +27,10 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import dev.frost819.newbv.app.ui.component.videocard.SmallVideoCard
 import dev.frost819.newbv.app.ui.component.videocard.VideoCardData
-import dev.frost819.newbv.app.ui.navigation.PgcFeatureRoute
 import dev.frost819.newbv.app.ui.navigation.SearchResultRoute
 import dev.frost819.newbv.app.ui.navigation.UserSpaceRoute
 import dev.frost819.newbv.app.ui.navigation.VideoDetailRoute
-import dev.frost819.newbv.app.ui.navigation.VideoPlayerRoute
 import dev.frost819.newbv.app.util.ToastUtils
-import dev.frost819.newbv.app.viewmodel.quickentry.QuickEntryUiEffect
 import dev.frost819.newbv.app.viewmodel.quickentry.QuickEntryViewModel
 import dev.frost819.newbv.core.focus.focusInvertedColors
 import dev.frost819.newbv.core.focus.touchClickable
@@ -135,6 +131,7 @@ fun QuickEntryButton(
  * - 视频 / UP 主 / 搜索：直接进入对应页面；
  * - 番剧：解析服务端观看记录后**直接进入播放器续播**（与详情页"播放"按钮
  *   同一优先级：上次看到 → 第一集），解析失败时降级跳转番剧详情页。
+ *   导航由屏幕级单点收集器处理（见 RecommendScreen），避免多卡片重复导航。
  *
  * 按遥控器**菜单键**打开操作面板（不响应长按）：
  * 第一个图标「置顶」把该入口移到收藏区最前，第二个图标「取消收藏」移除该入口。
@@ -147,26 +144,6 @@ fun QuickEntryCard(
 ) {
     val viewModel: QuickEntryViewModel = hiltViewModel()
     val context = LocalContext.current
-
-    // 番剧收藏直连播放器：VM 解析续播分集后发事件，这里负责导航
-    LaunchedEffect(entry.key) {
-        viewModel.uiEffect.collect { effect ->
-            when (effect) {
-                is QuickEntryUiEffect.PlayEpisode ->
-                    navController.navigate(
-                        VideoPlayerRoute(
-                            aid = effect.aid,
-                            cid = effect.cid,
-                            epid = effect.epid?.toLong(),
-                            title = effect.title,
-                            cover = effect.cover,
-                        ),
-                    )
-                is QuickEntryUiEffect.NavigateToSeasonDetail ->
-                    navController.navigate(PgcFeatureRoute(seasonId = effect.seasonId))
-            }
-        }
-    }
 
     SmallVideoCard(
         modifier = modifier,

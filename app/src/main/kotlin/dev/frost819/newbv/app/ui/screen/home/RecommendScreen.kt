@@ -23,13 +23,17 @@ import dev.frost819.newbv.app.ui.component.buttons.QuickEntryCard
 import dev.frost819.newbv.app.ui.component.focusSaverItem
 import dev.frost819.newbv.app.ui.component.videocard.SmallVideoCard
 import dev.frost819.newbv.app.ui.component.videocard.VideoCardData
+import dev.frost819.newbv.app.ui.navigation.PgcFeatureRoute
 import dev.frost819.newbv.app.ui.navigation.UserSpaceRoute
+import dev.frost819.newbv.app.ui.navigation.VideoPlayerRoute
 import dev.frost819.newbv.app.ui.navigation.navigateFromVideoCard
 import dev.frost819.newbv.app.util.formatHourMinSec
 import dev.frost819.newbv.app.util.toWanString
 import dev.frost819.newbv.app.viewmodel.common.CollectWatchLaterEffects
 import dev.frost819.newbv.app.viewmodel.common.WatchLaterViewModel
 import dev.frost819.newbv.app.viewmodel.home.HomeViewModel
+import dev.frost819.newbv.app.viewmodel.quickentry.QuickEntryUiEffect
+import dev.frost819.newbv.app.viewmodel.quickentry.QuickEntryViewModel
 import dev.frost819.newbv.data.quickentry.mergeQuickEntries
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -52,6 +56,33 @@ fun RecommendScreen(
     val watchLaterViewModel: WatchLaterViewModel = hiltViewModel()
 
     CollectWatchLaterEffects(watchLaterViewModel)
+
+    // 收藏直连播放：全局单点收集 QuickEntryViewModel 事件再导航。
+    // 不能放进 QuickEntryCard——每张卡片各自 collect 同一共享 VM 的流，
+    // 一次点击会被 N 张卡片重复消费，导致导航栈堆叠 N 层播放器。
+    val quickEntryViewModel: QuickEntryViewModel = hiltViewModel()
+    LaunchedEffect(Unit) {
+        quickEntryViewModel.uiEffect.collect { effect ->
+            when (effect) {
+                is QuickEntryUiEffect.PlayEpisode ->
+                    navController.navigate(
+                        VideoPlayerRoute(
+                            aid = effect.aid,
+                            cid = effect.cid,
+                            epid = effect.epid?.toLong(),
+                            title = effect.title,
+                            cover = effect.cover,
+                        ),
+                    ) {
+                        // 弹出已有播放器保证单例，双击/重复点击也不会堆叠
+                        popUpTo<VideoPlayerRoute> { inclusive = true }
+                        launchSingleTop = true
+                    }
+                is QuickEntryUiEffect.NavigateToSeasonDetail ->
+                    navController.navigate(PgcFeatureRoute(seasonId = effect.seasonId))
+            }
+        }
+    }
 
     // 收藏插入第一批推荐之前，与第一批内容去重；后续分页不受影响
     val feed =
