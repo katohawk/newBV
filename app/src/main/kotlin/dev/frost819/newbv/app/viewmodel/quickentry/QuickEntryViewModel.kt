@@ -6,7 +6,10 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.frost819.newbv.app.data.VideoInfoRepository
 import dev.frost819.newbv.app.entity.player.VideoListItem
 import dev.frost819.newbv.biliapi.entity.ApiType
+import dev.frost819.newbv.biliapi.entity.user.HistoryItemType
+import dev.frost819.newbv.biliapi.entity.video.season.Episode
 import dev.frost819.newbv.biliapi.entity.video.season.SeasonDetail
+import dev.frost819.newbv.biliapi.repositories.HistoryRepository
 import dev.frost819.newbv.biliapi.repositories.VideoDetailRepository
 import dev.frost819.newbv.core.log.Loggers
 import dev.frost819.newbv.data.datastore.ApiType as DataApiType
@@ -38,10 +41,24 @@ sealed interface QuickEntryUiEffect {
         val epid: Int?,
     ) : QuickEntryUiEffect
 
-    /** 降级：跳转番剧详情页（解析续播集失败时）。 */
+    /** 降级：跳转番剧详情页（无法确定续播分集时）。 */
     data class NavigateToSeasonDetail(
         val seasonId: Long,
     ) : QuickEntryUiEffect
+}
+
+/** 续播分集解析结果。 */
+private sealed interface ResumeResolution {
+    /** 命中观看记录，直接播放该集。 */
+    data class Matched(
+        val episode: Episode,
+    ) : ResumeResolution
+
+    /** 确认从未看过（记录与历史都为空），从第一集开播。 */
+    data object NeverWatched : ResumeResolution
+
+    /** 无法判断（记录缺失且历史拉取失败），降级详情页。 */
+    data object Unknown : ResumeResolution
 }
 
 /**
@@ -51,7 +68,8 @@ sealed interface QuickEntryUiEffect {
  * 番剧收藏支持解析续播分集后直接进入播放器。
  *
  * @param quickEntryRepository 快捷收藏仓库。
- * @param videoDetailRepository 视频详情仓库（解析番剧续播分集）。
+ * @param videoDetailRepository 视频详情仓库（解析番剧详情）。
+ * @param historyRepository 历史记录仓库（续播分集兜底解析）。
  * @param videoInfoRepository 视频共享状态仓库（填充播放器内选集列表）。
  */
 @HiltViewModel
@@ -60,6 +78,7 @@ class QuickEntryViewModel
     constructor(
         private val quickEntryRepository: QuickEntryRepository,
         private val videoDetailRepository: VideoDetailRepository,
+        private val historyRepository: HistoryRepository,
         private val videoInfoRepository: VideoInfoRepository,
     ) : ViewModel() {
         private val logger = Loggers.get("QuickEntryViewModel")
@@ -84,9 +103,9 @@ class QuickEntryViewModel
         /**
          * 从首页收藏卡片直接进入番剧播放。
          *
-         * 续播分集解析优先级与详情页一致：服务端观看记录 → 第一集。
+         * 续播分集解析优先级：番剧详情的服务端观看记录 → 最近观看历史（按分集 aid 匹配）
+         * → 从未看过则第一集；无法判断时降级跳转番剧详情页。
          * 同时把整季分集写入播放列表，保证播放器内可以继续切集。
-         * 任何一步失败都降级为跳转番剧详情页（[QuickEntryUiEffect.NavigateToSeasonDetail]）。
          *
          * @param entry 番剧收藏入口（需含有效 seasonId）。
          */
@@ -103,16 +122,26 @@ class QuickEntryViewModel
                         }
                     }.onFailure { error ->
                         // 协程取消必须透传；其余失败降级为跳详情页
-                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        if (error is CancellationException) throw error
                         logger.error(error) { "Failed to resolve season for quick play: $seasonId" }
                     }.getOrNull()
 
+                if (detail == null) {
+                    _uiEffect.emit(QuickEntryUiEffect.NavigateToSeasonDetail(seasonId))
+                    return@launch
+                }
+
                 val episode =
-                    detail?.let { resolveResumeEpisode(it) }
-                        ?: run {
-                            _uiEffect.emit(QuickEntryUiEffect.NavigateToSeasonDetail(seasonId))
-                            return@launch
-                        }
+                    when (val resolution = resolveResumeEpisode(detail)) {
+                        is ResumeResolution.Matched -> resolution.episode
+                        is ResumeResolution.NeverWatched -> detail.episodes.firstOrNull()
+                        is ResumeResolution.Unknown -> null
+                    }
+
+                if (episode == null) {
+                    _uiEffect.emit(QuickEntryUiEffect.NavigateToSeasonDetail(seasonId))
+                    return@launch
+                }
 
                 // 与详情页跳转播放器一致：先填充整季播放列表，播放器内选集/下一集才可用
                 videoInfoRepository.updateVideoList(
@@ -140,17 +169,43 @@ class QuickEntryViewModel
         }
 
         /**
-         * 续播分集：优先服务端观看记录的集，其次第一集。
+         * 解析续播分集。
          *
-         * 注意 App gRPC 模式下分集 [Episode.epid] 为 null（只有 id，值即 epid），
-         * 匹配时须回退到 id，否则观看记录永远匹配不上、只会从第一集开播。
+         * 1. 番剧详情自带的观看记录（lastEpId）：App gRPC 分集映射的 epid 可能为
+         *    null（id 即 epid），匹配时回退到 id；
+         * 2. 兜底：最近观看历史中该番剧下最近看过的一集（按分集 aid 匹配，
+         *    App 历史接口的 OGV 卡片不含 epid/cid，但 oid 即分集 aid）。
          */
-        private fun resolveResumeEpisode(detail: SeasonDetail) =
-            detail.userStatus.progress?.let { progress ->
-                val lastEpId = progress.lastEpId
-                (detail.episodes + detail.sections.flatMap { it.episodes })
-                    .firstOrNull { (it.epid ?: it.id) == lastEpId }
-            } ?: detail.episodes.firstOrNull()
+        private suspend fun resolveResumeEpisode(detail: SeasonDetail): ResumeResolution {
+            val allEps = detail.episodes + detail.sections.flatMap { it.episodes }
+            if (allEps.isEmpty()) return ResumeResolution.Unknown
+
+            val progress = detail.userStatus.progress
+            if (progress != null) {
+                allEps.firstOrNull { (it.epid ?: it.id) == progress.lastEpId }?.let {
+                    return ResumeResolution.Matched(it)
+                }
+            }
+
+            // 观看记录缺失或不匹配，拉最近的历史记录兜底
+            val history =
+                runCatching {
+                    withTimeout(LOAD_TIMEOUT_MS) {
+                        historyRepository.getHistories(cursor = 0, preferApiType = getApiType())
+                    }
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    logger.error(error) { "Failed to fetch history for resume: ${detail.seasonId}" }
+                }.getOrNull() ?: return ResumeResolution.Unknown
+
+            val aidToEpisode = allEps.associateBy { it.aid }
+            val matched =
+                history.data
+                    .filter { it.type == HistoryItemType.Pgc }
+                    .firstOrNull { it.oid in aidToEpisode }
+                    ?: return ResumeResolution.NeverWatched
+            return ResumeResolution.Matched(aidToEpisode.getValue(matched.oid))
+        }
 
         /** 将 DataApiType 映射为 bili-api 的 ApiType。 */
         private fun getApiType(): ApiType = if (Prefs.apiType == DataApiType.App) ApiType.App else ApiType.Web
