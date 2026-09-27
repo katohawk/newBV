@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -22,6 +23,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import dev.frost819.newbv.app.ui.component.player.ifElse
 import dev.frost819.newbv.app.ui.component.player.menu.component.MenuListItem
+import dev.frost819.newbv.app.ui.component.player.rememberPlayerFocusLoop
 import dev.frost819.newbv.app.viewmodel.player.MenuFocusState
 
 /**
@@ -42,6 +44,8 @@ fun PlaySpeedMenuList(
     onPlaySpeedChange: (Float) -> Unit,
     onFocusStateChange: (MenuFocusState) -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    val loop = rememberPlayerFocusLoop(PlaySpeedItem.entries.size, scrollToItem = { listState.scrollToItem(it) })
     val focusRequester = remember { FocusRequester() }
 
     Row(
@@ -49,6 +53,7 @@ fun PlaySpeedMenuList(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         LazyColumn(
+            state = listState,
             modifier =
                 Modifier
                     .padding(horizontal = 8.dp)
@@ -71,6 +76,7 @@ fun PlaySpeedMenuList(
                 MenuListItem(
                     modifier =
                         Modifier
+                            .then(loop(index == 0, index == PlaySpeedItem.entries.lastIndex))
                             .ifElse(
                                 index == currentSelectedPlaySpeedItem.ordinal,
                                 Modifier.focusRequester(focusRequester),

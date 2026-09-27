@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -68,6 +68,7 @@ fun VideoListController(
     onPlayNewVideo: (VideoListItem) -> Unit,
 ) {
     val listState = rememberLazyListState()
+    val loop = rememberPlayerFocusLoop(videoList.size, scrollToItem = { listState.scrollToItem(it) })
     val parentFocusRequester = remember { FocusRequester() }
     val childFocusRequester = remember { FocusRequester() }
 
@@ -122,12 +123,15 @@ fun VideoListController(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding = PaddingValues(vertical = 60.dp),
                 ) {
-                    items(
+                    itemsIndexed(
                         items = videoList,
-                        key = { it.cid },
-                    ) { video ->
+                        key = { _, video -> video.cid },
+                    ) { index, video ->
                         VideoListItemRow(
                             video = video,
+                            first = index == 0,
+                            last = index == videoList.lastIndex,
+                            loop = loop,
                             currentCid = currentCid,
                             parentFocusRequester = parentFocusRequester,
                             childFocusRequester = childFocusRequester,
@@ -146,6 +150,9 @@ fun VideoListController(
 @Composable
 private fun VideoListItemRow(
     video: VideoListItem,
+    first: Boolean,
+    last: Boolean,
+    loop: (Boolean, Boolean) -> Modifier,
     currentCid: Long,
     parentFocusRequester: FocusRequester,
     childFocusRequester: FocusRequester,
@@ -172,7 +179,12 @@ private fun VideoListItemRow(
             }
 
         PlayerListItem(
-            modifier = Modifier.padding(horizontal = 16.dp).then(parentModifier),
+            modifier =
+                Modifier
+                    .padding(
+                        horizontal = 16.dp,
+                    ).then(loop(first, last && !(expanded && hasSubPages)))
+                    .then(parentModifier),
             text = video.title,
             selected = isParentSelected && !isChildSelected,
             textAlign = TextAlign.Start,
@@ -208,7 +220,7 @@ private fun VideoListItemRow(
                 modifier = Modifier.padding(start = 16.dp, top = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                video.ugcPages?.forEach { page ->
+                video.ugcPages?.forEachIndexed { index, page ->
                     val isPageSelected = page.cid == currentCid
                     val childModifier =
                         if (isPageSelected) {
@@ -221,6 +233,7 @@ private fun VideoListItemRow(
                         modifier =
                             Modifier
                                 .padding(horizontal = 16.dp)
+                                .then(loop(false, last && index == video.ugcPages.lastIndex))
                                 .then(childModifier),
                         text = page.title,
                         selected = isPageSelected,

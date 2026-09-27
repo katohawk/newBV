@@ -8,6 +8,8 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.runtime.compositionLocalOf
 import androidx.lifecycle.ViewModel
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.frost819.newbv.data.datastore.Prefs
+import dev.frost819.newbv.data.datastore.ScreenMaskConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -23,6 +25,25 @@ import javax.inject.Inject
 class PlayerMenuViewModel
     @Inject
     constructor() : ViewModel() {
+        private val _screenMask = MutableStateFlow(Prefs.screenMask)
+
+        /** 遮挡配置与播放进度独立，编辑期间只更新内存。 */
+        val screenMask = _screenMask.asStateFlow()
+
+        /** 更新开关或外观并持久化；区域编辑传入 persist=false。 */
+        fun updateScreenMask(
+            config: ScreenMaskConfig,
+            persist: Boolean = true,
+        ) {
+            _screenMask.value = config.normalized()
+            if (persist) Prefs.screenMask = _screenMask.value
+        }
+
+        /** 完成区域编辑，保存当前配置。 */
+        fun saveScreenMask() {
+            Prefs.screenMask = _screenMask.value
+        }
+
         private val _menuState = MutableStateFlow(PlayerMenuState())
         val menuState = _menuState.asStateFlow()
 
@@ -84,6 +105,7 @@ enum class VideoPlayerMenuNavItem(
     Picture("画质", Icons.Outlined.Image),
     Danmaku("弹幕", Icons.Outlined.ClearAll),
     ClosedCaption("字幕", Icons.Outlined.ClosedCaption),
+    ScreenMask("画面遮挡", Icons.Outlined.Image),
 }
 
 /** 画质设置子项。 */

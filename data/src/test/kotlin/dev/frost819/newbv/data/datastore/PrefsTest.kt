@@ -3,11 +3,13 @@ package dev.frost819.newbv.data.datastore
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -305,6 +307,32 @@ class PrefsTest {
 
             assertThat(Prefs.uid).isEqualTo(99999L)
             assertThat(Prefs.isLogin).isTrue()
+        }
+
+    @Test
+    fun `screen mask persists all fields and restores after restart`() =
+        runBlocking {
+            // Given
+            assertThat(Prefs.screenMask).isEqualTo(ScreenMaskConfig())
+            val config = ScreenMaskConfig(true, 0.1f, 0.2f, 0.5f, 0.3f, 0x808080L, 0.6f, 8f)
+            // When: wait for the actual DataStore value, not an arbitrary sleep.
+            Prefs.screenMask = config
+            kotlinx.coroutines.withTimeout(5000) {
+                dataStore.data.first { it[PrefKeys.screenMask] == config.encode() }
+            }
+            Prefs.resetForTesting()
+            Prefs.init(dataStore)
+            // Then
+            assertThat(Prefs.screenMask).isEqualTo(config)
+        }
+
+    @Test
+    fun `corrupt persisted screen mask restores disabled default`() =
+        runBlocking {
+            dataStore.edit { it[PrefKeys.screenMask] = "invalid" }
+            Prefs.resetForTesting()
+            Prefs.init(dataStore)
+            assertThat(Prefs.screenMask).isEqualTo(ScreenMaskConfig())
         }
 
     // ===== buvid 自动生成测试 =====

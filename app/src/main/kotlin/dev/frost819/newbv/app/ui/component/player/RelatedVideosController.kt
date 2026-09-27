@@ -12,7 +12,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -48,6 +49,9 @@ fun RelatedVideosController(
     relatedVideos: List<VideoCardData>,
     onVideoClicked: (VideoCardData) -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    val loop =
+        rememberPlayerFocusLoop(relatedVideos.size, horizontal = true, scrollToItem = { listState.scrollToItem(it) })
     val focusRequester = remember { FocusRequester() }
 
     val backgroundBrush =
@@ -92,17 +96,18 @@ fun RelatedVideosController(
                     color = Color.White,
                 )
                 LazyRow(
+                    state = listState,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding =
                         androidx.compose.foundation.layout
                             .PaddingValues(horizontal = 24.dp),
                 ) {
-                    items(
+                    itemsIndexed(
                         items = relatedVideos,
-                        key = { it.avid },
-                    ) { video ->
+                        key = { _, video -> video.avid },
+                    ) { index, video ->
                         SmallVideoCard(
-                            modifier = Modifier.width(240.dp),
+                            modifier = Modifier.width(240.dp).then(loop(index == 0, index == relatedVideos.lastIndex)),
                             data = video,
                             onClick = { onVideoClicked(video) },
                         )

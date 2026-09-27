@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +27,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import dev.frost819.newbv.app.ui.component.player.ifElse
+import dev.frost819.newbv.app.ui.component.player.rememberPlayerFocusLoop
 import dev.frost819.newbv.app.viewmodel.player.LocalMenuFocusStateData
 import dev.frost819.newbv.app.viewmodel.player.MenuFocusState
 
@@ -57,6 +59,8 @@ fun <T> PlayerThreeLevelMenu(
     // 防空：无子项时不渲染任何内容
     if (categories.isEmpty()) return
 
+    val listState = rememberLazyListState()
+    val loop = rememberPlayerFocusLoop(categories.size, scrollToItem = { listState.scrollToItem(it) })
     val focusState = LocalMenuFocusStateData.current
     val restorerFocusRequester = remember { FocusRequester() }
     val focusRequester = remember { FocusRequester() }
@@ -81,6 +85,7 @@ fun <T> PlayerThreeLevelMenu(
         }
 
         LazyColumn(
+            state = listState,
             modifier =
                 Modifier
                     .focusRequester(focusRequester)
@@ -106,6 +111,7 @@ fun <T> PlayerThreeLevelMenu(
                 MenuListItem(
                     modifier =
                         Modifier
+                            .then(loop(index == 0, index == categories.lastIndex))
                             .ifElse(index == 0, Modifier.focusRequester(restorerFocusRequester)),
                     text = categoryLabel(item),
                     selected = selectedCategory == item,

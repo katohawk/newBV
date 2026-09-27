@@ -7,10 +7,16 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.google.common.truth.Truth.assertThat
+import io.mockk.Runs
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -125,6 +131,29 @@ class PrefDelegateTest {
         assertThat(delegate.flow.value).isEqualTo(2)
         assertThat(delegate.getValue(null, ::dummy)).isEqualTo(ThemeMode.Light)
     }
+
+    @Test
+    fun `out of order writes cannot overwrite the latest screen mask color`() =
+        runBlocking {
+            // Given: two writes queued before either reaches DataStore.
+            val key = stringPreferencesKey("test_mask_order")
+            val delegate = PrefDelegate(key, ScreenMaskConfig(), ScreenMaskConfig::encode, ScreenMaskConfig::decode)
+            val writes = mutableListOf<suspend () -> Unit>()
+            mockkObject(Prefs)
+            try {
+                every { Prefs.launchPersist(capture(writes)) } just Runs
+                delegate.setValue(null, ::dummy, ScreenMaskConfig(color = 0x123456L))
+                val latest = ScreenMaskConfig(color = 0xABCDEF, alpha = 0.5f)
+                delegate.setValue(null, ::dummy, latest)
+                // When: deliberately finish the newer write first, simulating IO scheduling inversion.
+                for (write in writes.reversed()) write()
+                // Then: the older queued write must not revert the user's latest adjustment.
+                val saved = requireNotNull(dataStore.data.first()[key])
+                assertThat(ScreenMaskConfig.decode(saved)).isEqualTo(latest)
+            } finally {
+                unmockkObject(Prefs)
+            }
+        }
 
     // ===== Prefs flow 属性 =====
 

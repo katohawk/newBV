@@ -251,6 +251,8 @@ private fun LiveControllerInfoBottom(
                 add(LiveControllerIcon(R.drawable.settings_24px, "打开设置", onShowSettings))
             }
 
+        val buttonLoop = rememberPlayerFocusLoop(icons.size, horizontal = true)
+
         Row(
             modifier =
                 Modifier
@@ -268,7 +270,7 @@ private fun LiveControllerInfoBottom(
             icons.forEachIndexed { index, (icon, desc, action) ->
                 key(index) {
                     Surface(
-                        modifier = Modifier.touchClickable(onClick = action),
+                        modifier = buttonLoop(index == 0, index == icons.lastIndex).touchClickable(onClick = action),
                         onClick = action,
                         shape = ClickableSurfaceDefaults.shape(shape = MaterialTheme.shapes.small),
                     ) {

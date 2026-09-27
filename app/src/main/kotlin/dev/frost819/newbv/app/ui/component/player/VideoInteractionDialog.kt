@@ -80,6 +80,7 @@ fun VideoInteractionDialog(
                         style = MaterialTheme.typography.titleLarge,
                     )
 
+                    val loop = rememberPlayerFocusLoop(3, horizontal = true)
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -92,6 +93,7 @@ fun VideoInteractionDialog(
                                 } else {
                                     Icons.Outlined.ThumbUp
                                 },
+                            modifier = loop(true, false),
                             onClick = onLike,
                             onLongClick = onOneClickTriple,
                         )
@@ -115,6 +117,7 @@ fun VideoInteractionDialog(
                                 } else {
                                     Icons.Outlined.StarBorder
                                 },
+                            modifier = loop(false, true),
                             onClick = onFavorite,
                         )
                     }
@@ -130,10 +133,11 @@ private fun InteractionAction(
     icon: ImageVector,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
 ) {
     Surface(
         modifier =
-            Modifier
+            modifier
                 .size(100.dp)
                 .touchClickable(onClick = onClick, onLongClick = onLongClick),
         onClick = onClick,

@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -15,6 +16,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import dev.frost819.newbv.app.ui.component.player.ifElse
 import dev.frost819.newbv.app.ui.component.player.menu.component.MenuListItem
+import dev.frost819.newbv.app.ui.component.player.rememberPlayerFocusLoop
 
 /**
  * 菜单导航列表（右侧）。
@@ -42,6 +44,8 @@ fun <T> MenuNavList(
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester = remember { FocusRequester() },
 ) {
+    val listState = rememberLazyListState()
+    val loop = rememberPlayerFocusLoop(items.size, scrollToItem = { listState.scrollToItem(it) })
     val restorerFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
@@ -49,6 +53,7 @@ fun <T> MenuNavList(
     }
 
     LazyColumn(
+        state = listState,
         modifier =
             modifier
                 .focusRestorer(restorerFocusRequester)
@@ -60,6 +65,7 @@ fun <T> MenuNavList(
             MenuListItem(
                 modifier =
                     Modifier
+                        .then(loop(index == 0, index == items.lastIndex))
                         .ifElse(index == 0, Modifier.focusRequester(restorerFocusRequester)),
                 text = label(item),
                 icon = icon(item),

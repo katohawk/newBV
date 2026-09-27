@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -19,6 +20,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
@@ -48,6 +51,7 @@ import dev.frost819.newbv.biliapi.entity.video.Subtitle
 import dev.frost819.newbv.core.theme.BVTheme
 import dev.frost819.newbv.core.theme.ThemeMode
 import dev.frost819.newbv.data.datastore.Prefs
+import dev.frost819.newbv.data.datastore.ScreenMaskConfig
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -101,8 +105,16 @@ fun VideoPlayerController(
     onRelatedVideoClicked: (dev.frost819.newbv.app.ui.component.videocard.VideoCardData) -> Unit,
     onToggleDanmaku: () -> Unit,
     onShowShortcutTip: (String) -> Unit,
+    screenMask: ScreenMaskConfig,
+    isMaskEditing: Boolean,
+    onScreenMaskChange: (ScreenMaskConfig) -> Unit,
+    onEditScreenMask: () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    val controllerFocus = remember { FocusRequester() }
+    LaunchedEffect(isMaskEditing) {
+        if (!isMaskEditing) controllerFocus.requestFocus()
+    }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -398,11 +410,12 @@ fun VideoPlayerController(
         modifier =
             modifier
                 .background(Color.Black)
-                .focusable()
+                .focusRequester(controllerFocus)
                 .onPreviewKeyEvent { event ->
                     startControllerAutoHide()
                     handleKeyEvent(event)
-                }.playerGestures(
+                }.focusable()
+                .playerGestures(
                     totalDuration = { seekerState.value.totalDuration },
                     controllerVisible = { showInfoSeekController },
                     callbacks =
@@ -616,6 +629,15 @@ fun VideoPlayerController(
                 onSubtitleSizeChange = { onSubtitleSettingChange(SubtitleSettingAction.SetFontSize(it)) },
                 onSubtitleBackgroundOpacityChange = { onSubtitleSettingChange(SubtitleSettingAction.SetOpacity(it)) },
                 onSubtitleBottomPadding = { onSubtitleSettingChange(SubtitleSettingAction.SetBottomPadding(it)) },
+                screenMask = screenMask,
+                onScreenMaskChange = onScreenMaskChange,
+                onEditScreenMask = {
+                    seekCountdown?.cancel()
+                    hideInfoSeekCountdown?.cancel()
+                    isSeeking = false
+                    closeAllControllers()
+                    onEditScreenMask()
+                },
             )
         }
     }

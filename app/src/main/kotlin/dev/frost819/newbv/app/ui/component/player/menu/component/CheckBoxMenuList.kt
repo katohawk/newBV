@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -18,6 +19,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import dev.frost819.newbv.app.ui.component.player.ifElse
+import dev.frost819.newbv.app.ui.component.player.rememberPlayerFocusLoop
 
 /**
  * 多选菜单列表。
@@ -39,8 +41,11 @@ fun CheckBoxMenuList(
     onSelectedChanged: (indexes: List<Int>) -> Unit,
     onFocusBackToParent: () -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    val loop = rememberPlayerFocusLoop(items.size, scrollToItem = { listState.scrollToItem(it) })
     val focusRequester = remember { FocusRequester() }
     LazyColumn(
+        state = listState,
         modifier =
             modifier
                 .onPreviewKeyEvent {
@@ -62,6 +67,7 @@ fun CheckBoxMenuList(
                 modifier =
                     Modifier
                         .fillMaxWidth()
+                        .then(loop(index == 0, index == items.lastIndex))
                         .ifElse(index == 0, Modifier.focusRequester(focusRequester)),
                 text = item,
                 selected = selected.contains(index),

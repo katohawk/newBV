@@ -79,7 +79,10 @@ class PrefDelegate<T, P>(
         flow.value = persistValue
         val dataStore = Prefs.dataStore
         Prefs.launchPersist {
-            dataStore.edit { prefs -> prefs[key] = persistValue }
+            dataStore.edit { prefs ->
+                // IO 调度不保证 launch 的执行顺序；旧任务不能覆盖连续调色等操作的新值。
+                if (flow.value == persistValue) prefs[key] = persistValue
+            }
         }
     }
 
@@ -284,6 +287,14 @@ object Prefs {
         ActionAfterPlay.PlayNext,
         save = { it.code },
         restore = { ActionAfterPlay.fromCode(it) },
+    )
+
+    /** 全局画面遮挡；单个 JSON 值原子保存，播放器重建不重置。 */
+    var screenMask by pref(
+        PrefKeys.screenMask,
+        ScreenMaskConfig(),
+        save = { it.encode() },
+        restore = { ScreenMaskConfig.decode(it) },
     )
 
     /** 自定义播放快捷键（JSON 字符串）。 */

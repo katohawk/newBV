@@ -458,6 +458,8 @@ fun ControllerVideoInfoBottom(
                 )
             }
 
+        val buttonLoop = rememberPlayerFocusLoop(icons.size, horizontal = true)
+
         Row(
             modifier =
                 Modifier
@@ -473,11 +475,11 @@ fun ControllerVideoInfoBottom(
                     }.padding(horizontal = 24.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
         ) {
-            icons.forEach { item ->
+            icons.forEachIndexed { index, item ->
                 key(item.description) {
                     Surface(
                         modifier =
-                            Modifier.touchClickable(
+                            buttonLoop(index == 0, index == icons.lastIndex).touchClickable(
                                 onClick = item.action,
                             ),
                         onClick = item.action,

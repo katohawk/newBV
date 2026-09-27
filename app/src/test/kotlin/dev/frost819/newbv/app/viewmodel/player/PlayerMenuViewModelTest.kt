@@ -1,6 +1,14 @@
 package dev.frost819.newbv.app.viewmodel.player
 
 import com.google.common.truth.Truth.assertThat
+import dev.frost819.newbv.data.datastore.Prefs
+import dev.frost819.newbv.data.datastore.ScreenMaskConfig
+import io.mockk.Runs
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
+import io.mockk.verify
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -16,6 +24,28 @@ class PlayerMenuViewModelTest {
     @BeforeEach
     fun setUp() {
         viewModel = PlayerMenuViewModel()
+    }
+
+    @Test
+    fun `mask editor keeps draft in memory and saves only on finish`() {
+        mockkObject(Prefs)
+        try {
+            val stored = ScreenMaskConfig(enabled = true)
+            every { Prefs.screenMask } returns stored
+            every { Prefs.screenMask = any() } just Runs
+            val menu = PlayerMenuViewModel()
+            assertThat(menu.screenMask.value).isEqualTo(stored)
+            val draft = stored.adjusted(-0.01f, 0f, resize = false)
+            menu.updateScreenMask(draft, persist = false)
+            verify(exactly = 0) { Prefs.screenMask = any() }
+            assertThat(menu.screenMask.value).isEqualTo(draft)
+            menu.saveScreenMask()
+            verify(exactly = 1) { Prefs.screenMask = draft }
+            menu.updateScreenMask(draft.copy(alpha = 0.5f))
+            verify(exactly = 1) { Prefs.screenMask = draft.copy(alpha = 0.5f) }
+        } finally {
+            unmockkObject(Prefs)
+        }
     }
 
     @Test

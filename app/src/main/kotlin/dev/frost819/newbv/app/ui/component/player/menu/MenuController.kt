@@ -40,6 +40,7 @@ import dev.frost819.newbv.biliapi.entity.video.SubtitleAiType
 import dev.frost819.newbv.biliapi.entity.video.SubtitleType
 import dev.frost819.newbv.data.datastore.Audio
 import dev.frost819.newbv.data.datastore.DanmakuType
+import dev.frost819.newbv.data.datastore.ScreenMaskConfig
 import dev.frost819.newbv.data.datastore.VideoCodec
 
 /**
@@ -88,6 +89,9 @@ fun MenuController(
     onSubtitleSizeChange: (Int) -> Unit,
     onSubtitleBackgroundOpacityChange: (Float) -> Unit,
     onSubtitleBottomPadding: (Int) -> Unit,
+    screenMask: ScreenMaskConfig,
+    onScreenMaskChange: (ScreenMaskConfig) -> Unit,
+    onEditScreenMask: () -> Unit,
 ) {
     val focusRequester = remember { FocusRequester() }
 
@@ -127,6 +131,9 @@ fun MenuController(
                 onSubtitleSizeChange = onSubtitleSizeChange,
                 onSubtitleBackgroundOpacityChange = onSubtitleBackgroundOpacityChange,
                 onSubtitleBottomPadding = onSubtitleBottomPadding,
+                screenMask = screenMask,
+                onScreenMaskChange = onScreenMaskChange,
+                onEditScreenMask = onEditScreenMask,
             )
         }
     }
@@ -154,6 +161,9 @@ private fun MenuControllerContent(
     onSubtitleSizeChange: (Int) -> Unit,
     onSubtitleBackgroundOpacityChange: (Float) -> Unit,
     onSubtitleBottomPadding: (Int) -> Unit,
+    screenMask: ScreenMaskConfig,
+    onScreenMaskChange: (ScreenMaskConfig) -> Unit,
+    onEditScreenMask: () -> Unit,
 ) {
     var selectedNavItem by remember { mutableStateOf(VideoPlayerMenuNavItem.PlaySpeed) }
     var focusState by remember { mutableStateOf(MenuFocusState.MenuNav) }
@@ -191,6 +201,9 @@ private fun MenuControllerContent(
                     onSubtitleSizeChange = onSubtitleSizeChange,
                     onSubtitleBackgroundOpacityChange = onSubtitleBackgroundOpacityChange,
                     onSubtitleBottomPadding = onSubtitleBottomPadding,
+                    screenMask = screenMask,
+                    onScreenMaskChange = onScreenMaskChange,
+                    onEditScreenMask = onEditScreenMask,
                 )
                 MenuNavList(
                     modifier =
@@ -240,9 +253,20 @@ private fun MenuList(
     onSubtitleSizeChange: (Int) -> Unit,
     onSubtitleBackgroundOpacityChange: (Float) -> Unit,
     onSubtitleBottomPadding: (Int) -> Unit,
+    screenMask: ScreenMaskConfig,
+    onScreenMaskChange: (ScreenMaskConfig) -> Unit,
+    onEditScreenMask: () -> Unit,
 ) {
     Box(contentAlignment = Alignment.Center) {
         when (selectedNavMenu) {
+            VideoPlayerMenuNavItem.ScreenMask ->
+                ScreenMaskMenu(
+                    config = screenMask,
+                    onChange = onScreenMaskChange,
+                    onEdit = onEditScreenMask,
+                    onFocusStateChange = onFocusStateChange,
+                )
+
             VideoPlayerMenuNavItem.Picture ->
                 PictureMenuList(
                     availableQualityIds = uiState.availableQuality.keys.toList(),

@@ -3,7 +3,6 @@ package dev.frost819.newbv.app.ui.screen.player
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -21,10 +20,13 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.frost819.newbv.app.entity.player.VideoListItem
 import dev.frost819.newbv.app.ui.component.comment.CommentDialogMode
 import dev.frost819.newbv.app.ui.component.comment.CommentsDialog
+import dev.frost819.newbv.app.ui.component.player.ScreenMaskEditor
+import dev.frost819.newbv.app.ui.component.player.ScreenMaskOverlay
 import dev.frost819.newbv.app.ui.component.player.VideoInteractionDialog
 import dev.frost819.newbv.app.ui.component.player.VideoPlayerController
 import dev.frost819.newbv.app.ui.component.rememberDoublePressExit
@@ -38,6 +40,7 @@ import dev.frost819.newbv.app.util.ToastUtils
 import dev.frost819.newbv.app.util.VideoShotImageCache
 import dev.frost819.newbv.app.viewmodel.comment.CommentViewModel
 import dev.frost819.newbv.app.viewmodel.player.DanmakuViewModel
+import dev.frost819.newbv.app.viewmodel.player.PlayerMenuViewModel
 import dev.frost819.newbv.app.viewmodel.player.PlayerViewModel
 import dev.frost819.newbv.app.viewmodel.player.SubtitleViewModel
 import dev.frost819.newbv.app.viewmodel.player.VideoListViewModel
@@ -67,6 +70,7 @@ fun VideoPlayerScreen(
     subtitleViewModel: SubtitleViewModel = hiltViewModel(),
     videoListViewModel: VideoListViewModel = hiltViewModel(),
     commentViewModel: CommentViewModel = hiltViewModel(),
+    menuViewModel: PlayerMenuViewModel = hiltViewModel(),
 ) {
     val logger = Loggers.get("VideoPlayerScreen")
     val context = LocalContext.current
@@ -85,6 +89,9 @@ fun VideoPlayerScreen(
     val subtitleData by subtitleViewModel.subtitleData.collectAsState()
     val subtitleList by subtitleViewModel.subtitleList.collectAsState()
     val sharedState by playerViewModel.videoSharedState.collectAsState()
+
+    val screenMask by menuViewModel.screenMask.collectAsStateWithLifecycle()
+    var isMaskEditing by remember { mutableStateOf(false) }
 
     val maskFinder = remember { DanmakuMaskFinder() }
     var currentDanmakuMaskFrame by remember { mutableStateOf<DanmakuMaskFrame?>(null) }
@@ -327,6 +334,10 @@ fun VideoPlayerScreen(
         },
         onToggleDanmaku = { danmakuViewModel.toggleDanmaku() },
         onShowShortcutTip = { text -> playerViewModel.showShortcutTip(text) },
+        screenMask = screenMask,
+        isMaskEditing = isMaskEditing,
+        onScreenMaskChange = { menuViewModel.updateScreenMask(it) },
+        onEditScreenMask = { isMaskEditing = true },
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -343,10 +354,14 @@ fun VideoPlayerScreen(
                 }
 
             if (videoPlayer != null) {
-                BvVideoPlayer(
-                    modifier = Modifier.fillMaxHeight().aspectRatio(aspectRatio),
-                    videoPlayer = videoPlayer,
-                )
+                // 视频与遮挡共享实际显示区域；按可用宽高 fit，超宽视频也不会被拉伸。
+                Box(modifier = Modifier.aspectRatio(aspectRatio)) {
+                    BvVideoPlayer(
+                        modifier = Modifier.fillMaxSize(),
+                        videoPlayer = videoPlayer,
+                    )
+                    ScreenMaskOverlay(config = screenMask, editing = isMaskEditing)
+                }
             }
 
             // 弹幕层
@@ -364,6 +379,17 @@ fun VideoPlayerScreen(
                 )
             }
         }
+    }
+
+    if (isMaskEditing) {
+        ScreenMaskEditor(
+            config = screenMask,
+            onChange = { menuViewModel.updateScreenMask(it, persist = false) },
+            onFinish = {
+                menuViewModel.saveScreenMask()
+                isMaskEditing = false
+            },
+        )
     }
 
     if (showInteractionDialog) {
