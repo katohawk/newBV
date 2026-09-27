@@ -61,28 +61,7 @@ fun RecommendScreen(
     // 不能放进 QuickEntryCard——每张卡片各自 collect 同一共享 VM 的流，
     // 一次点击会被 N 张卡片重复消费，导致导航栈堆叠 N 层播放器。
     val quickEntryViewModel: QuickEntryViewModel = hiltViewModel()
-    LaunchedEffect(Unit) {
-        quickEntryViewModel.uiEffect.collect { effect ->
-            when (effect) {
-                is QuickEntryUiEffect.PlayEpisode ->
-                    navController.navigate(
-                        VideoPlayerRoute(
-                            aid = effect.aid,
-                            cid = effect.cid,
-                            epid = effect.epid?.toLong(),
-                            title = effect.title,
-                            cover = effect.cover,
-                        ),
-                    ) {
-                        // 弹出已有播放器保证单例，双击/重复点击也不会堆叠
-                        popUpTo<VideoPlayerRoute> { inclusive = true }
-                        launchSingleTop = true
-                    }
-                is QuickEntryUiEffect.NavigateToSeasonDetail ->
-                    navController.navigate(PgcFeatureRoute(seasonId = effect.seasonId))
-            }
-        }
-    }
+    CollectQuickEntryEffects(quickEntryViewModel.uiEffect, navController)
 
     // 收藏插入第一批推荐之前，与第一批内容去重；后续分页不受影响
     val feed =
@@ -124,7 +103,8 @@ fun RecommendScreen(
                 QuickEntryCard(
                     entry = favorite,
                     navController = navController,
-                    modifier = Modifier.focusSaverItem(focusSaver, "rcmd_$index"),
+                    modifier = Modifier.focusSaverItem(focusSaver, "rcmd_favorite_${favorite.key}"),
+                    viewModel = quickEntryViewModel,
                 )
             } else {
                 val item = state.recommendItems[feedItem.recommendationIndex]
@@ -168,6 +148,39 @@ fun RecommendScreen(
                 hasMore = state.recommendHasMore,
                 itemsIsEmpty = state.recommendItems.isEmpty(),
             )
+        }
+    }
+}
+
+/** 首页统一收集收藏导航事件，避免每张卡片重复消费同一事件。 */
+@Composable
+internal fun CollectQuickEntryEffects(
+    effects: kotlinx.coroutines.flow.SharedFlow<QuickEntryUiEffect>,
+    navController: NavController,
+) {
+    LaunchedEffect(effects, navController) {
+        effects.collect { effect ->
+            when (effect) {
+                is QuickEntryUiEffect.PlayEpisode ->
+                    navController.navigate(
+                        VideoPlayerRoute(
+                            aid = effect.aid,
+                            cid = effect.cid,
+                            epid = effect.epid?.toLong(),
+                            seasonId = effect.seasonId,
+                            subType = effect.subType,
+                            startPosition = effect.startPosition,
+                            title = effect.title,
+                            cover = effect.cover,
+                        ),
+                    ) {
+                        // 弹出已有播放器保证单例，双击/重复点击也不会堆叠
+                        popUpTo<VideoPlayerRoute> { inclusive = true }
+                        launchSingleTop = true
+                    }
+                is QuickEntryUiEffect.NavigateToSeasonDetail ->
+                    navController.navigate(PgcFeatureRoute(seasonId = effect.seasonId))
+            }
         }
     }
 }

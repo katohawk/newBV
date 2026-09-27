@@ -39,7 +39,7 @@ class VideoListViewModelTest {
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
         videoDetailRepository = mockk()
-        videoInfoRepository = VideoInfoRepository(videoDetailRepository)
+        videoInfoRepository = VideoInfoRepository(videoDetailRepository, io.mockk.mockk(relaxed = true))
         viewModel = VideoListViewModel(videoInfoRepository)
     }
 

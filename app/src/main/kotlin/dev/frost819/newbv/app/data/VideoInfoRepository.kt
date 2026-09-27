@@ -6,6 +6,9 @@ import dev.frost819.newbv.biliapi.entity.video.RelatedVideo
 import dev.frost819.newbv.biliapi.entity.video.VideoDetail
 import dev.frost819.newbv.biliapi.repositories.VideoDetailRepository
 import dev.frost819.newbv.core.log.Loggers
+import dev.frost819.newbv.data.datastore.Prefs
+import dev.frost819.newbv.data.repository.PlaybackProgressRepository
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -37,15 +40,42 @@ data class VideoSharedState(
 /**
  * 番剧分集的片头片尾时间（秒），用于播放器自动跳过 OP/ED。
  *
+ * @property introStartSec 片头开始时间，开始之前不跳过
  * @property introEndSec 片头结束时间，0 表示无片头数据
  * @property outroStartSec 片尾开始时间，0 表示无片尾数据
  * @property outroEndSec 片尾结束时间，0 表示未知
  */
 data class SkipTimeInfo(
     val introEndSec: Int = 0,
+    val introStartSec: Int = 0,
     val outroStartSec: Int = 0,
     val outroEndSec: Int = 0,
-)
+) {
+    /** 仅跳过真实 OP 区间，不跳过 OP 前的正片；未知总时长时等待播放器就绪。 */
+    fun containsIntro(
+        positionMs: Long,
+        durationMs: Long,
+    ): Boolean = validRange(introStartSec, introEndSec, positionMs, durationMs)
+
+    /** 仅跳过完整有效的 ED 区间，结束后的彩蛋不触发跳过。 */
+    fun containsOutro(
+        positionMs: Long,
+        durationMs: Long,
+    ): Boolean = validRange(outroStartSec, outroEndSec, positionMs, durationMs)
+
+    private fun validRange(
+        start: Int,
+        end: Int,
+        position: Long,
+        duration: Long,
+    ): Boolean =
+        start >= 0 &&
+            end > start &&
+            duration > 0 &&
+            end * 1000L <= duration &&
+            position >= start * 1000L &&
+            position < end * 1000L
+}
 
 /**
  * 应用级视频信息共享仓库。
@@ -60,8 +90,11 @@ class VideoInfoRepository
     @Inject
     constructor(
         private val videoDetailRepository: VideoDetailRepository,
+        private val playbackProgressRepository: PlaybackProgressRepository,
     ) {
         private val logger = Loggers.get("VideoInfoRepository")
+        private var detailGeneration = 0L
+        private var historyOwner: Pair<Long, Long>? = null
 
         private val _videoList = MutableStateFlow<List<VideoListItem>>(emptyList())
         val videoList = _videoList.asStateFlow()
@@ -79,7 +112,7 @@ class VideoInfoRepository
 
         private val _skipTimes = MutableStateFlow<Map<Long, SkipTimeInfo>>(emptyMap())
 
-        /** 番剧分集片头片尾时间（cid -> 时间），由番剧详情页填充，播放器按 cid 查询。 */
+        /** 番剧分集片头片尾时间（cid -> 时间），由播放器入口加载，播放器按 cid 查询。 */
         val skipTimes = _skipTimes.asStateFlow()
 
         /**
@@ -92,14 +125,15 @@ class VideoInfoRepository
         fun updateVideoDetail(detail: VideoDetail) {
             _videoDetail.update { detail }
             _relatedVideos.update { detail.relatedVideos }
-            _videoSharedState.update {
+            _videoSharedState.update { old ->
+                val local = old?.takeIf { it.aid == detail.aid && historyOwner == (Prefs.uid to detail.aid) }
                 VideoSharedState(
                     aid = detail.aid,
                     liked = detail.userActions.like,
                     coined = detail.userActions.coin,
                     favorited = detail.userActions.favorite,
-                    lastPlayedCid = detail.history.lastPlayedCid,
-                    lastPlayedTime = detail.history.progress,
+                    lastPlayedCid = local?.lastPlayedCid ?: detail.history.lastPlayedCid,
+                    lastPlayedTime = local?.lastPlayedTime ?: detail.history.progress,
                 )
             }
         }
@@ -115,24 +149,25 @@ class VideoInfoRepository
             preferApiType: ApiType,
             bvid: String = "",
         ) {
+            val generation = ++detailGeneration
             runCatching {
                 val detail = videoDetailRepository.getVideoDetail(aid = aid, preferApiType = preferApiType, bvid = bvid)
-                _videoDetail.update { detail }
-                _relatedVideos.update { detail.relatedVideos }
-                _videoSharedState.update {
-                    VideoSharedState(
-                        aid = detail.aid,
-                        liked = detail.userActions.like,
-                        coined = detail.userActions.coin,
-                        favorited = detail.userActions.favorite,
-                        lastPlayedCid = detail.history.lastPlayedCid,
-                        lastPlayedTime = detail.history.progress,
-                    )
-                }
+                val local = playbackProgressRepository.get(Prefs.uid, aid)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (generation != detailGeneration) return
+                updateVideoDetail(detail)
+                if (local != null) updateHistory(local.position, local.cid)
                 logger.info { "Loaded video detail: aid=$aid, related=${detail.relatedVideos.size}" }
             }.onFailure { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 logger.error(e) { "Failed to load video detail: aid=$aid" }
             }
+        }
+
+        /** 用本机记录刷新详情续播入口，不让服务端旧记录覆盖本机进度。 */
+        suspend fun restoreLocalHistory(aid: Long) {
+            val local = playbackProgressRepository.get(Prefs.uid, aid) ?: return
+            if (_videoSharedState.value?.aid == aid) updateHistory(local.position, local.cid)
         }
 
         /**
@@ -174,13 +209,17 @@ class VideoInfoRepository
         /**
          * 为列表中的每个视频加载 UGC 分 P 信息。
          *
-         * 仅对有多分 P 的视频生效。
+         * 仅对普通视频生效；番剧以完整的 aid/cid/epid 分集标识播放。
          *
          * @param preferApiType 接口类型
          */
         suspend fun updateUgcPages(preferApiType: ApiType) {
             _videoList.update { oldList ->
                 oldList.map { item ->
+                    // 部分番剧的 UGC 接口返回整季 CID，套在单个 EP 下会导致选集时 AV/EP 与 CID 错配。
+                    if ((item.epid ?: 0) > 0 || (item.seasonId ?: 0) > 0) {
+                        return@map item.copy(ugcPages = null)
+                    }
                     runCatching {
                         val pages = videoDetailRepository.getUgcPages(aid = item.aid, preferApiType = preferApiType)
                         if (pages.size > 1) item.copy(ugcPages = pages) else item
@@ -193,15 +232,19 @@ class VideoInfoRepository
          * 更新播放历史（仅历史字段，不影响交互状态）。
          *
          * @param progress 播放进度（秒），-1 表示已看完
+         * @param aid 当前播放视频，切集时显式传入以避免继承上一集的交互状态
          * @param lastPlayedCid 最近播放的 CID
          */
         fun updateHistory(
             progress: Int,
             lastPlayedCid: Long,
+            aid: Long? = null,
         ) {
+            val targetAid = aid ?: _videoSharedState.value?.aid ?: 0L
+            historyOwner = Prefs.uid to targetAid
             _videoSharedState.update { old ->
-                old?.copy(lastPlayedCid = lastPlayedCid, lastPlayedTime = progress)
-                    ?: VideoSharedState(aid = 0, lastPlayedCid = lastPlayedCid, lastPlayedTime = progress)
+                old?.takeIf { it.aid == targetAid }?.copy(lastPlayedCid = lastPlayedCid, lastPlayedTime = progress)
+                    ?: VideoSharedState(aid = targetAid, lastPlayedCid = lastPlayedCid, lastPlayedTime = progress)
             }
         }
 
@@ -241,8 +284,51 @@ class VideoInfoRepository
             _skipTimes.update { times }
         }
 
+        /** 兼容只携带 epid 的旧播放入口，补齐番剧身份和分集列表。 */
+        suspend fun loadSeasonContext(
+            epid: Int?,
+            apiType: ApiType,
+        ): dev.frost819.newbv.biliapi.entity.video.season.SeasonDetail {
+            val detail =
+                kotlinx.coroutines.withTimeout(10_000L) {
+                    videoDetailRepository.getPgcVideoDetail(epid = epid, preferApiType = apiType)
+                }
+            updateVideoList(
+                (detail.episodes + detail.sections.flatMap { it.episodes }).map {
+                    VideoListItem(
+                        aid = it.aid,
+                        cid = it.cid,
+                        epid = it.epid ?: it.id,
+                        seasonId = detail.seasonId,
+                        title = it.title,
+                    )
+                },
+            )
+            return detail
+        }
+
+        /** 从播放入口加载标记，调用方负责切集时取消旧请求；缺失标记不影响播放。 */
+        suspend fun loadSkipTimes(
+            epid: Int?,
+            seasonId: Int,
+        ) {
+            val times =
+                kotlinx.coroutines
+                    .withTimeoutOrNull(10_000L) {
+                        videoDetailRepository.getPgcSkipTimes(epid, seasonId.takeIf { it > 0 })
+                    }.orEmpty()
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            updateSkipTimes(
+                times.mapValues { (_, skip) ->
+                    SkipTimeInfo(skip.introEnd, skip.introStart, skip.outroStart, skip.outroEnd)
+                },
+            )
+        }
+
         /** 重置所有状态。 */
         fun reset() {
+            detailGeneration++
+            historyOwner = null
             _videoList.update { emptyList() }
             _videoDetail.update { null }
             _relatedVideos.update { emptyList() }

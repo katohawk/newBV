@@ -12,12 +12,13 @@ import dev.frost819.newbv.biliapi.entity.video.season.SeasonDetail
 import dev.frost819.newbv.biliapi.repositories.HistoryRepository
 import dev.frost819.newbv.biliapi.repositories.VideoDetailRepository
 import dev.frost819.newbv.core.log.Loggers
-import dev.frost819.newbv.data.datastore.ApiType as DataApiType
 import dev.frost819.newbv.data.datastore.Prefs
 import dev.frost819.newbv.data.quickentry.QuickEntry
 import dev.frost819.newbv.data.quickentry.QuickEntryRepository
-import javax.inject.Inject
+import dev.frost819.newbv.data.repository.PlaybackProgressRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -27,6 +28,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import javax.inject.Inject
+import dev.frost819.newbv.data.datastore.ApiType as DataApiType
 
 private const val LOAD_TIMEOUT_MS = 15_000L
 
@@ -39,6 +42,9 @@ sealed interface QuickEntryUiEffect {
         val title: String,
         val cover: String,
         val epid: Int?,
+        val seasonId: Int,
+        val subType: Int,
+        val startPosition: Int,
     ) : QuickEntryUiEffect
 
     /** 降级：跳转番剧详情页（无法确定续播分集时）。 */
@@ -52,10 +58,8 @@ private sealed interface ResumeResolution {
     /** 命中观看记录，直接播放该集。 */
     data class Matched(
         val episode: Episode,
+        val position: Int,
     ) : ResumeResolution
-
-    /** 确认从未看过（记录与历史都为空），从第一集开播。 */
-    data object NeverWatched : ResumeResolution
 
     /** 无法判断（记录缺失且历史拉取失败），降级详情页。 */
     data object Unknown : ResumeResolution
@@ -77,11 +81,14 @@ class QuickEntryViewModel
     @Inject
     constructor(
         private val quickEntryRepository: QuickEntryRepository,
+        private val playbackProgressRepository: PlaybackProgressRepository,
         private val videoDetailRepository: VideoDetailRepository,
         private val historyRepository: HistoryRepository,
         private val videoInfoRepository: VideoInfoRepository,
     ) : ViewModel() {
         private val logger = Loggers.get("QuickEntryViewModel")
+
+        private var playJob: Job? = null
 
         /** 已收藏入口的 key 集合。 */
         val savedKeys: StateFlow<Set<String>> =
@@ -90,6 +97,8 @@ class QuickEntryViewModel
                 .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
         private val _uiEffect = MutableSharedFlow<QuickEntryUiEffect>()
+
+        /** 单点收集的导航事件。 */
         val uiEffect: SharedFlow<QuickEntryUiEffect> = _uiEffect.asSharedFlow()
 
         /** 收藏（saved = true）或取消收藏（saved = false）。 */
@@ -103,69 +112,74 @@ class QuickEntryViewModel
         /**
          * 从首页收藏卡片直接进入番剧播放。
          *
-         * 续播分集解析优先级：番剧详情的服务端观看记录 → 最近观看历史（按分集 aid 匹配）
-         * → 从未看过则第一集；无法判断时降级跳转番剧详情页。
+         * 续播分集解析优先级：本机记录 → 番剧详情的服务端观看记录 → 最近观看历史（按分集 aid 匹配）
+         * → 无法判断时降级跳转番剧详情页。
          * 同时把整季分集写入播放列表，保证播放器内可以继续切集。
          *
          * @param entry 番剧收藏入口（需含有效 seasonId）。
          */
         fun playSeason(entry: QuickEntry) {
             val seasonId = entry.seasonId.takeIf { it > 0 } ?: return
-            viewModelScope.launch {
-                val detail =
-                    runCatching {
-                        withTimeout(LOAD_TIMEOUT_MS) {
-                            videoDetailRepository.getPgcVideoDetail(
-                                seasonId = seasonId.toInt(),
-                                preferApiType = getApiType(),
-                            )
-                        }
-                    }.onFailure { error ->
-                        // 协程取消必须透传；其余失败降级为跳详情页
-                        if (error is CancellationException) throw error
-                        logger.error(error) { "Failed to resolve season for quick play: $seasonId" }
-                    }.getOrNull()
+            playJob?.cancel()
+            playJob =
+                viewModelScope.launch {
+                    val detail =
+                        runCatching {
+                            withTimeout(LOAD_TIMEOUT_MS) {
+                                videoDetailRepository.getPgcVideoDetail(
+                                    seasonId = seasonId.toInt(),
+                                    preferApiType = getApiType(),
+                                )
+                            }
+                        }.onFailure { error ->
+                            // 协程取消必须透传；其余失败降级为跳详情页
+                            if (error is CancellationException && error !is TimeoutCancellationException) throw error
+                            logger.error(error) { "Failed to resolve season for quick play: $seasonId" }
+                        }.getOrNull()
 
-                if (detail == null) {
-                    _uiEffect.emit(QuickEntryUiEffect.NavigateToSeasonDetail(seasonId))
-                    return@launch
-                }
-
-                val episode =
-                    when (val resolution = resolveResumeEpisode(detail)) {
-                        is ResumeResolution.Matched -> resolution.episode
-                        is ResumeResolution.NeverWatched -> detail.episodes.firstOrNull()
-                        is ResumeResolution.Unknown -> null
+                    if (detail == null) {
+                        _uiEffect.emit(QuickEntryUiEffect.NavigateToSeasonDetail(seasonId))
+                        return@launch
                     }
 
-                if (episode == null) {
-                    _uiEffect.emit(QuickEntryUiEffect.NavigateToSeasonDetail(seasonId))
-                    return@launch
-                }
+                    val resolution = resolveResumeEpisode(detail)
+                    val episode =
+                        when (resolution) {
+                            is ResumeResolution.Matched -> resolution.episode
+                            is ResumeResolution.Unknown -> null
+                        }
 
-                // 与详情页跳转播放器一致：先填充整季播放列表，播放器内选集/下一集才可用
-                videoInfoRepository.updateVideoList(
-                    (detail.episodes + detail.sections.flatMap { it.episodes }).map { ep ->
-                        VideoListItem(
-                            aid = ep.aid,
-                            cid = ep.cid,
-                            epid = ep.epid,
+                    if (episode == null) {
+                        _uiEffect.emit(QuickEntryUiEffect.NavigateToSeasonDetail(seasonId))
+                        return@launch
+                    }
+
+                    // 与详情页跳转播放器一致：先填充整季播放列表，播放器内选集/下一集才可用
+                    videoInfoRepository.updateVideoList(
+                        (detail.episodes + detail.sections.flatMap { it.episodes }).map { ep ->
+                            VideoListItem(
+                                aid = ep.aid,
+                                cid = ep.cid,
+                                epid = ep.epid ?: ep.id,
+                                seasonId = detail.seasonId,
+                                title = ep.title,
+                            )
+                        },
+                    )
+
+                    _uiEffect.emit(
+                        QuickEntryUiEffect.PlayEpisode(
+                            aid = episode.aid,
+                            cid = episode.cid,
+                            title = episode.title,
+                            cover = episode.cover,
+                            epid = episode.epid ?: episode.id,
                             seasonId = detail.seasonId,
-                            title = ep.title,
-                        )
-                    },
-                )
-
-                _uiEffect.emit(
-                    QuickEntryUiEffect.PlayEpisode(
-                        aid = episode.aid,
-                        cid = episode.cid,
-                        title = episode.title,
-                        cover = episode.cover,
-                        epid = episode.epid,
-                    ),
-                )
-            }
+                            subType = detail.subType,
+                            startPosition = (resolution as? ResumeResolution.Matched)?.position?.coerceAtLeast(0) ?: 0,
+                        ),
+                    )
+                }
         }
 
         /**
@@ -180,10 +194,15 @@ class QuickEntryViewModel
             val allEps = detail.episodes + detail.sections.flatMap { it.episodes }
             if (allEps.isEmpty()) return ResumeResolution.Unknown
 
+            val local = playbackProgressRepository.get(Prefs.uid, 0L, detail.seasonId)
+            allEps.firstOrNull { it.cid == local?.cid && it.aid == local.aid }?.let {
+                return ResumeResolution.Matched(it, requireNotNull(local).position)
+            }
+
             val progress = detail.userStatus.progress
             if (progress != null) {
                 allEps.firstOrNull { (it.epid ?: it.id) == progress.lastEpId }?.let {
-                    return ResumeResolution.Matched(it)
+                    return ResumeResolution.Matched(it, progress.lastTime)
                 }
             }
 
@@ -194,7 +213,7 @@ class QuickEntryViewModel
                         historyRepository.getHistories(cursor = 0, preferApiType = getApiType())
                     }
                 }.onFailure { error ->
-                    if (error is CancellationException) throw error
+                    if (error is CancellationException && error !is TimeoutCancellationException) throw error
                     logger.error(error) { "Failed to fetch history for resume: ${detail.seasonId}" }
                 }.getOrNull() ?: return ResumeResolution.Unknown
 
@@ -203,8 +222,8 @@ class QuickEntryViewModel
                 history.data
                     .filter { it.type == HistoryItemType.Pgc }
                     .firstOrNull { it.oid in aidToEpisode }
-                    ?: return ResumeResolution.NeverWatched
-            return ResumeResolution.Matched(aidToEpisode.getValue(matched.oid))
+                    ?: return ResumeResolution.Unknown
+            return ResumeResolution.Matched(aidToEpisode.getValue(matched.oid), matched.progress)
         }
 
         /** 将 DataApiType 映射为 bili-api 的 ApiType。 */

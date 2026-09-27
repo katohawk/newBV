@@ -16,7 +16,9 @@ import dev.frost819.newbv.biliapi.entity.user.DynamicVideoData
 import dev.frost819.newbv.biliapi.repositories.RecommendVideoRepository
 import dev.frost819.newbv.biliapi.repositories.UserRepository
 import dev.frost819.newbv.data.datastore.Prefs
+import dev.frost819.newbv.data.quickentry.QuickEntry
 import dev.frost819.newbv.data.quickentry.QuickEntryRepository
+import dev.frost819.newbv.data.quickentry.QuickEntryType
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -29,6 +31,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterAll
@@ -145,6 +148,74 @@ class HomeViewModelTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun `missing UP avatar is loaded without changing favorites order and cached`() =
+        runTest {
+            // Given
+            val up = QuickEntry(QuickEntryType.UP, "UP", mid = 123)
+            val video = QuickEntry(QuickEntryType.VIDEO, "视频", aid = 1)
+            val entries = MutableStateFlow(listOf(up, video))
+            every { quickEntryRepo.entries } returns entries
+            coEvery { userRepo.getUserInfo(123) } returns
+                mockk { every { face } returns "https://example.com/avatar.jpg" }
+
+            // When
+            viewModel = createViewModel()
+            advanceUntilIdle()
+
+            // Then
+            assertThat(viewModel.uiState.value.quickEntries)
+                .containsExactly(up.copy(cover = "https://example.com/avatar.jpg"), video)
+                .inOrder()
+            entries.value = listOf(video, up)
+            advanceUntilIdle()
+            val lastCover =
+                viewModel.uiState.value.quickEntries
+                    .last()
+                    .cover
+            assertThat(lastCover).isEqualTo("https://example.com/avatar.jpg")
+            coVerify(exactly = 1) { userRepo.getUserInfo(123) }
+        }
+
+    @Test
+    fun `avatar failure keeps favorite and existing covers need no request`() =
+        runTest {
+            // Given
+            val missing = QuickEntry(QuickEntryType.UP, "UP", mid = 123)
+            val existing = QuickEntry(QuickEntryType.UP, "已有头像", cover = "https://example.com/face.jpg", mid = 456)
+            every { quickEntryRepo.entries } returns MutableStateFlow(listOf(missing, existing))
+            coEvery { userRepo.getUserInfo(123) } throws IOException("offline")
+
+            // When
+            viewModel = createViewModel()
+            advanceUntilIdle()
+
+            // Then
+            assertThat(viewModel.uiState.value.quickEntries).containsExactly(missing, existing).inOrder()
+            coVerify(exactly = 0) { userRepo.getUserInfo(456) }
+            assertThat(viewModel.uiState.value.recommendItems).isNotEmpty()
+        }
+
+    @Test
+    fun `removing favorite cancels pending avatar without restoring removed card`() =
+        runTest {
+            // Given
+            val up = QuickEntry(QuickEntryType.UP, "UP", mid = 123)
+            val entries = MutableStateFlow(listOf(up))
+            every { quickEntryRepo.entries } returns entries
+            coEvery { userRepo.getUserInfo(123) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+            viewModel = createViewModel()
+            runCurrent()
+
+            // When
+            entries.value = emptyList()
+            advanceUntilIdle()
+
+            // Then
+            assertThat(viewModel.uiState.value.quickEntries).isEmpty()
+            coVerify(exactly = 1) { userRepo.getUserInfo(123) }
+        }
 
     @Test
     fun `init loads recommend and popular`() =

@@ -4,6 +4,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -22,9 +25,6 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.StarBorder
 import dev.frost819.newbv.app.ui.component.videocard.SmallVideoCard
 import dev.frost819.newbv.app.ui.component.videocard.VideoCardData
 import dev.frost819.newbv.app.ui.navigation.SearchResultRoute
@@ -93,10 +93,11 @@ fun QuickEntryButton(
                 border =
                     if (saved) {
                         Border(
-                            border = androidx.compose.foundation.BorderStroke(
-                                2.dp,
-                                MaterialTheme.colorScheme.border,
-                            ),
+                            border =
+                                androidx.compose.foundation.BorderStroke(
+                                    2.dp,
+                                    MaterialTheme.colorScheme.border,
+                                ),
                             shape = MaterialTheme.shapes.small,
                         )
                     } else {
@@ -141,8 +142,8 @@ fun QuickEntryCard(
     entry: QuickEntry,
     navController: NavController,
     modifier: Modifier = Modifier,
+    viewModel: QuickEntryViewModel = hiltViewModel(),
 ) {
-    val viewModel: QuickEntryViewModel = hiltViewModel()
     val context = LocalContext.current
 
     SmallVideoCard(
@@ -165,7 +166,7 @@ fun QuickEntryCard(
                 QuickEntryType.VIDEO -> navController.navigate(VideoDetailRoute(aid = entry.aid))
                 QuickEntryType.SEASON -> viewModel.playSeason(entry)
                 QuickEntryType.UP ->
-                    navController.navigate(UserSpaceRoute(mid = entry.mid, name = entry.title))
+                    navController.navigate(UserSpaceRoute(mid = entry.mid, name = entry.title, face = entry.cover))
                 else ->
                     navController.navigate(
                         SearchResultRoute(keyword = entry.keyword, searchType = entry.searchType),

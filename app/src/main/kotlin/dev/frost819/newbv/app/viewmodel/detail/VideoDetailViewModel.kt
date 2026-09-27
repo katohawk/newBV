@@ -205,6 +205,7 @@ class VideoDetailViewModel
 
                         // 同步到 VideoInfoRepository（相关视频、历史进度）
                         videoInfoRepository.updateVideoDetail(detail)
+                        videoInfoRepository.restoreLocalHistory(detail.aid)
 
                         if (Prefs.isLogin) {
                             fetchFavoriteFolders()

@@ -288,9 +288,13 @@ class VideoDetailRepository(
                     ep.cid to
                         EpisodeSkipTimes(
                             introEnd = skip.op.end,
+                            introStart = skip.op.start,
                             outroStart = skip.ed.start,
                             outroEnd = skip.ed.end,
                         )
                 }.toMap()
-        }.getOrDefault(emptyMap())
+        }.getOrElse { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            emptyMap()
+        }
 }

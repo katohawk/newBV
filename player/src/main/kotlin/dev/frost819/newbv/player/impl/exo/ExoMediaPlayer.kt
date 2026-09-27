@@ -9,6 +9,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.Renderer
@@ -118,6 +119,7 @@ class ExoMediaPlayer(
             ExoPlayer
                 .Builder(context)
                 .setRenderersFactory(renderersFactory)
+                .setLoadControl(createPlaybackLoadControl())
                 .setSeekForwardIncrementMs(1000 * 10)
                 .setSeekBackIncrementMs(1000 * 5)
                 .build()
@@ -379,6 +381,21 @@ class ExoMediaPlayer(
         }
     }
 }
+
+/**
+ * 按进程 Java 堆预算限制音视频缓冲，为 UI、弹幕和网络请求保留内存。
+ *
+ * @param maxHeapBytes 进程堆上限；默认读取运行时，测试可传入低内存设备预算。
+ * @return 优先遵守字节预算的 Media3 加载控制器。
+ */
+@OptIn(UnstableApi::class)
+internal fun createPlaybackLoadControl(maxHeapBytes: Long = Runtime.getRuntime().maxMemory()): DefaultLoadControl =
+    DefaultLoadControl
+        .Builder()
+        // 默认音视频目标约 137.5 MiB，超过部分 TV 的整个堆；不能只缩短缓冲时长。
+        .setTargetBufferBytes((maxHeapBytes / 4).coerceIn(1L, 64L * 1024 * 1024).toInt())
+        .setPrioritizeTimeOverSizeThresholds(false)
+        .build()
 
 /**
  * 剥离 `#EXT-X-START` 标签的 HLS Playlist 解析器工厂。

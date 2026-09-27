@@ -13,7 +13,6 @@ import dev.frost819.newbv.biliapi.repositories.SearchTypeResult
 import dev.frost819.newbv.data.datastore.Prefs
 import io.mockk.coEvery
 import io.mockk.coVerify
-import io.mockk.eq
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -650,7 +649,10 @@ class SearchResultViewModelTest {
             // 用户手动切换到未加载的 Tab 时按需加载
             viewModel.switchType(SearchType.BiliUser)
             advanceUntilIdle()
-            assertThat(viewModel.uiState.value.results[SearchType.BiliUser]!!.items).hasSize(1)
+            assertThat(
+                viewModel.uiState.value.results[SearchType.BiliUser]!!
+                    .items,
+            ).hasSize(1)
         }
 
     @Test

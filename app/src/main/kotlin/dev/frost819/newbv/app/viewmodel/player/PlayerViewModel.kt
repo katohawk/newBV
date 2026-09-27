@@ -42,6 +42,8 @@ import dev.frost819.newbv.data.datastore.Audio
 import dev.frost819.newbv.data.datastore.Prefs
 import dev.frost819.newbv.data.datastore.Resolution
 import dev.frost819.newbv.data.datastore.VideoCodec
+import dev.frost819.newbv.data.repository.PlaybackProgress
+import dev.frost819.newbv.data.repository.PlaybackProgressRepository
 import dev.frost819.newbv.player.AbstractVideoPlayer
 import dev.frost819.newbv.player.CdnSelector
 import dev.frost819.newbv.player.VideoPlayerListener
@@ -96,6 +98,7 @@ private const val ONLINE_WATCH_REFRESH_MS = 60_000L
  * @param exoPlayerFactory ExoPlayer 工厂
  * @param videoCapabilityProvider 设备视频解码能力查询器（选流时过滤超能力组合）
  * @param cdnSelector CDN 测速选择器（开启自动选源时用于排序候选地址）
+ * @param playbackProgressRepository 本机观看进度，按账号和视频／季保存
  */
 @HiltViewModel
 class PlayerViewModel
@@ -111,6 +114,7 @@ class PlayerViewModel
         private val favoriteRepository: FavoriteRepository,
         private val oneClickTripleActionRepository: OneClickTripleActionRepository,
         private val cdnSelector: CdnSelector,
+        private val playbackProgressRepository: PlaybackProgressRepository,
     ) : ViewModel() {
         private val logger = Loggers.get("PlayerViewModel")
 
@@ -135,6 +139,10 @@ class PlayerViewModel
         private val detachedWorkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         // 自动跳过片头片尾：每个视频只跳一次，用户手动回看不会重复触发
+        private var skipTimesJob: Job? = null
+        private var detailLoadJob: Job? = null
+        private var playedCid = 0L
+        private var playbackUid = 0L
         private var hasSkippedIntro = false
         private var hasSkippedOutro = false
 
@@ -214,10 +222,12 @@ class PlayerViewModel
                 override fun onPlay() {
                     logger.info { "onPlay" }
                     _uiState.update { it.copy(playerState = PlayerState.Playing, isBuffering = false) }
+                    playedCid = _uiState.value.cid
                     if (_uiState.value.lastPlayed > 0) {
                         seekToLastPlayed()
                         _uiState.update { it.copy(lastPlayed = 0) }
                     }
+                    saveLocalProgress()
                 }
 
                 override fun onPause() {
@@ -235,6 +245,7 @@ class PlayerViewModel
                     stopSeekerUpdater()
                     stopDebugInfoUpdater()
                     _uiState.update { it.copy(playerState = PlayerState.Ended) }
+                    saveLocalProgress()
                     viewModelScope.launch { _uiEffect.emit(PlayerUiEffect.PlayEnded) }
                 }
 
@@ -291,6 +302,8 @@ class PlayerViewModel
                 )
             }
 
+            playbackUid = Prefs.uid
+            playedCid = 0L
             startClockUpdater()
             // 同时观看人数观察者：监听 cid 变化即时拉取，就绪后周期刷新
             startOnlineWatchingObserver()
@@ -304,9 +317,9 @@ class PlayerViewModel
          *
          * 在进度轮询（100ms）中调用，仅在播放状态下生效：
          * - 片头：播放位置处于 OP 区间内时，跳到片头结束；
-         * - 片尾：进入 ED 区间时，跳到片尾结束（约等于视频结尾，随后自然触发播完流程）。
+         * - 片尾：有下一集则切集，否则跳到 ED 结束并保留其后的彩蛋。
          *
-         * 片头片尾时间来自 [VideoInfoRepository]（番剧详情页经 Web 接口补充拉取，
+         * 片头片尾时间来自 [VideoInfoRepository]（播放入口经 Web 接口补充拉取，
          * App gRPC 接口不返回该数据），按 cid 实时查询；每个视频各只触发一次，
          * 用户手动 seek 回片头不会重复跳过。开关关闭时完全不介入。
          *
@@ -321,29 +334,21 @@ class PlayerViewModel
             if (_uiState.value.playerState != PlayerState.Playing) return
             val skip = videoInfoRepository.skipTimes.value[_uiState.value.cid] ?: return
 
-            if (!hasSkippedIntro && skip.introEndSec > 0 && positionMs in 0 until skip.introEndSec * 1000L) {
+            if (!hasSkippedIntro && skip.containsIntro(positionMs, durationMs)) {
                 hasSkippedIntro = true
                 seekToTime(skip.introEndSec * 1000L)
                 showShortcutTip("已自动跳过片头")
                 return
             }
 
-            if (!hasSkippedOutro && skip.outroStartSec > 0 && positionMs >= skip.outroStartSec * 1000L) {
+            if (!hasSkippedOutro && skip.containsOutro(positionMs, durationMs)) {
                 hasSkippedOutro = true
                 val next = findNextPlayTarget()
                 if (next != null) {
-                    // 进入片尾直接切下一集，不等 ED 播完
                     playNextTarget(next)
                     showShortcutTip("已跳过片尾")
                 } else {
-                    // 已是最后一集：跳到片尾结束，走自然播完流程
-                    val targetMs =
-                        when {
-                            durationMs <= 0L -> skip.outroEndSec * 1000L
-                            skip.outroEndSec > 0 -> minOf(skip.outroEndSec * 1000L, durationMs - 500L)
-                            else -> durationMs - 500L
-                        }.coerceAtLeast(0L)
-                    seekToTime(targetMs)
+                    seekToTime(skip.outroEndSec * 1000L)
                     showShortcutTip("已自动跳过片尾")
                 }
             }
@@ -359,13 +364,32 @@ class PlayerViewModel
          * 避免多 P 视频中把 P2 的进度应用到 P1。
          *
          * @param aid 视频 AV 号
+         * @param bvid 视频 BV 号
+         * @param startPosition 显式续播位置（秒），null 时查本机和服务端历史
          */
         suspend fun loadVideoDetail(
             aid: Long,
             bvid: String = "",
+            startPosition: Int? = null,
         ) {
+            if (_uiState.value.fromSeason && _uiState.value.seasonId == 0) {
+                try {
+                    val detail = videoInfoRepository.loadSeasonContext(_uiState.value.epid, getApiType())
+                    _uiState.update { it.copy(seasonId = detail.seasonId, subType = detail.subType) }
+                } catch (error: Exception) {
+                    if (error is CancellationException &&
+                        error !is kotlinx.coroutines.TimeoutCancellationException
+                    ) {
+                        throw error
+                    }
+                    failPlayback("番剧信息加载失败，请重试")
+                    return
+                }
+            }
+            loadSkipTimes()
             videoInfoRepository.loadVideoDetail(aid, getApiType(), bvid)
-            videoInfoRepository.videoDetail.value?.let { detail ->
+            if (_uiState.value.aid != aid) return
+            videoInfoRepository.videoDetail.value?.takeIf { it.aid == aid }?.let { detail ->
                 _uiState.update {
                     it.copy(
                         // 详情接口返回的 cid 是视频默认分P（第一个分P）。仅当进入时
@@ -377,11 +401,34 @@ class PlayerViewModel
                     )
                 }
             }
-            val sharedState = videoInfoRepository.videoSharedState.value
+            val sharedState = videoInfoRepository.videoSharedState.value?.takeIf { it.aid == aid }
             val historyCid = sharedState?.lastPlayedCid ?: 0L
             val historyTime = sharedState?.lastPlayedTime ?: 0
-            if (historyCid == _uiState.value.cid && historyTime > 0) {
-                _uiState.update { it.copy(lastPlayed = historyTime) }
+            val state = _uiState.value
+            val local = playbackProgressRepository.get(playbackUid, state.aid, state.seasonId)
+            val position =
+                startPosition ?: local?.takeIf { it.cid == state.cid && it.aid == state.aid }?.position
+                    ?: historyTime.takeIf { historyCid == state.cid }
+            _uiState.update {
+                if (it.aid == state.aid &&
+                    it.cid == state.cid
+                ) {
+                    it.copy(lastPlayed = position?.coerceAtLeast(0) ?: 0)
+                } else {
+                    it
+                }
+            }
+        }
+
+        private fun loadSkipTimes() {
+            skipTimesJob?.cancel()
+            videoInfoRepository.updateSkipTimes(emptyMap())
+            val state = _uiState.value
+            if (state.fromSeason) {
+                skipTimesJob =
+                    viewModelScope.launch {
+                        videoInfoRepository.loadSkipTimes(state.epid, state.seasonId)
+                    }
             }
         }
 
@@ -476,6 +523,9 @@ class PlayerViewModel
 
         /** 释放播放器资源，同步进度到 B 站。 */
         fun detachPlayer() {
+            skipTimesJob?.cancel()
+            detailLoadJob?.cancel()
+            loadVideoJob?.cancel()
             syncProgress(scope = detachedWorkScope, isDetaching = true)
             videoPlayer?.release()
             videoPlayer = null
@@ -734,11 +784,11 @@ class PlayerViewModel
         fun playNewVideo(newVideo: VideoListItem) {
             videoPlayer?.pause()
 
-            val state = _uiState.value
-            val shouldUpdateDetail = state.aid != newVideo.aid
+            val shouldUpdateDetail = _uiState.value.aid != newVideo.aid
             val shouldUpdateList = videoInfoRepository.videoList.value.none { it.aid == newVideo.aid }
 
             syncProgress(viewModelScope)
+            playedCid = 0L
 
             // 清空旧视频状态，防止新视频加载失败时残留旧数据
             playData = null
@@ -754,6 +804,7 @@ class PlayerViewModel
                     cid = newVideo.cid,
                     epid = newVideo.epid,
                     seasonId = newVideo.seasonId ?: 0,
+                    fromSeason = (newVideo.epid ?: 0) > 0,
                     title = newVideo.title,
                     lastPlayed = 0,
                     isBuffering = true,
@@ -784,19 +835,15 @@ class PlayerViewModel
             // 通知 UI 层重载弹幕/字幕（非阻塞，避免卡住 playNewVideo）
             viewModelScope.launch { _videoSwitchEvent.emit(VideoSwitchEvent(newVideo.aid, newVideo.cid)) }
 
-            // 异步加载详情 + 历史进度（不阻塞 playVideoWithResources）
+            // 更新详情供交互和推荐使用，但不允许晚到的历史响应改变已选中的分集和进度。
+            detailLoadJob?.cancel()
             if (shouldUpdateDetail) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    videoInfoRepository.loadVideoDetail(newVideo.aid, getApiType())
-                    // 仅当历史 cid 与当前播放 cid 一致时才应用断点续播
-                    val sharedState = videoInfoRepository.videoSharedState.value
-                    val historyCid = sharedState?.lastPlayedCid ?: 0L
-                    val historyTime = sharedState?.lastPlayedTime ?: 0
-                    if (historyCid == newVideo.cid && historyTime > 0) {
-                        _uiState.update { it.copy(lastPlayed = historyTime) }
+                detailLoadJob =
+                    viewModelScope.launch {
+                        videoInfoRepository.loadVideoDetail(newVideo.aid, getApiType())
                     }
-                }
             }
+            loadSkipTimes()
             if (shouldUpdateList) {
                 videoInfoRepository.updateVideoList(listOf(newVideo))
             }
@@ -806,7 +853,7 @@ class PlayerViewModel
 
         /** 发送心跳（进度上报）。 */
         fun trySendHeartbeat() {
-            syncProgress(scope = viewModelScope, updateLocal = false)
+            syncProgress(scope = viewModelScope)
         }
 
         /**
@@ -1278,8 +1325,10 @@ class PlayerViewModel
                     currentTime
                 }
 
-            if (updateLocal) {
-                videoInfoRepository.updateHistory(reportTime, state.cid)
+            if (playedCid != state.cid) return
+            saveLocalProgress()
+            if (updateLocal && !Prefs.incognitoMode) {
+                videoInfoRepository.updateHistory(reportTime, state.cid, state.aid)
             }
 
             if (!Prefs.incognitoMode) {
@@ -1299,6 +1348,26 @@ class PlayerViewModel
                         }
                     }
             }
+        }
+
+        private fun saveLocalProgress() {
+            val state = _uiState.value
+            val player = videoPlayer ?: return
+            if (playedCid != state.cid || state.cid <= 0) return
+            val position = player.currentPosition.coerceAtLeast(0)
+            val finished =
+                state.playerState == PlayerState.Ended || (player.duration > 0 && position >= player.duration)
+            playbackProgressRepository.save(
+                playbackUid,
+                PlaybackProgress(
+                    state.aid,
+                    state.cid,
+                    state.epid,
+                    state.seasonId,
+                    if (finished) -1 else (position / 1000).toInt(),
+                ),
+                Prefs.incognitoMode,
+            )
         }
 
         private suspend fun uploadHistory(

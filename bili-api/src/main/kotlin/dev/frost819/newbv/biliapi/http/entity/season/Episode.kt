@@ -134,8 +134,8 @@ data class Episode(
      */
     @Serializable
     data class Skip(
-        val op: SkipTime,
-        val ed: SkipTime,
+        val op: SkipTime = SkipTime(),
+        val ed: SkipTime = SkipTime(),
     ) {
         /**
          * 跳过时间
@@ -145,8 +145,8 @@ data class Episode(
          */
         @Serializable
         data class SkipTime(
-            val start: Int,
-            val end: Int,
+            val start: Int = 0,
+            val end: Int = 0,
         )
     }
 

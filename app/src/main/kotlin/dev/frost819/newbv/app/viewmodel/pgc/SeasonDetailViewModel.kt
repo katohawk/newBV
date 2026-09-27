@@ -5,7 +5,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.frost819.newbv.app.data.VideoInfoRepository
-import dev.frost819.newbv.app.data.SkipTimeInfo
 import dev.frost819.newbv.app.entity.player.VideoListItem
 import dev.frost819.newbv.biliapi.entity.ApiType
 import dev.frost819.newbv.biliapi.entity.video.season.Episode
@@ -14,6 +13,7 @@ import dev.frost819.newbv.biliapi.repositories.UserRepository
 import dev.frost819.newbv.biliapi.repositories.VideoDetailRepository
 import dev.frost819.newbv.core.log.Loggers
 import dev.frost819.newbv.data.datastore.Prefs
+import dev.frost819.newbv.data.repository.PlaybackProgressRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -66,6 +66,9 @@ sealed interface SeasonDetailUiEffect {
         val title: String,
         val cover: String,
         val epid: Int?,
+        val seasonId: Int = 0,
+        val subType: Int = 0,
+        val startPosition: Int? = null,
     ) : SeasonDetailUiEffect
 }
 
@@ -86,6 +89,7 @@ class SeasonDetailViewModel
         private val videoDetailRepository: VideoDetailRepository,
         private val userRepository: UserRepository,
         private val videoInfoRepository: VideoInfoRepository,
+        private val playbackProgressRepository: PlaybackProgressRepository,
         savedStateHandle: SavedStateHandle,
     ) : ViewModel() {
         private val logger = Loggers.get("SeasonDetailViewModel")
@@ -141,12 +145,16 @@ class SeasonDetailViewModel
                                 seasonId = seasonId.takeIf { it != 0 },
                                 preferApiType = prefApiType(),
                             )
+                        val local =
+                            playbackProgressRepository
+                                .get(Prefs.uid, 0L, detail.seasonId)
+                                ?.takeIf { findEpisodeByCid(detail, it.cid) != null }
                         _uiState.update {
                             it.copy(
                                 seasonDetail = detail,
                                 isFollowing = detail.userStatus.follow,
-                                historyLastPlayedCid = serverLastPlayedCid(detail),
-                                historyLastPlayedTime = detail.userStatus.progress?.lastTime ?: 0,
+                                historyLastPlayedCid = local?.cid ?: serverLastPlayedCid(detail),
+                                historyLastPlayedTime = local?.position ?: detail.userStatus.progress?.lastTime ?: 0,
                             )
                         }
                     }
@@ -164,36 +172,6 @@ class SeasonDetailViewModel
                 }
 
                 _uiState.update { it.copy(loading = false) }
-            }
-            loadSkipTimes()
-        }
-
-        /**
-         * 补拉分集片头片尾时间（自动跳过 OP/ED 用）。
-         *
-         * 统一走 Web 接口（App gRPC 不返回该数据），与详情加载并行、
-         * 失败静默降级（播放器查不到数据即不跳过），绝不影响详情加载与播放。
-         *
-         * @param seasonIdOverride 切季时传入目标季 ID，缺省用当前季
-         */
-        private fun loadSkipTimes(seasonIdOverride: Int? = null) {
-            viewModelScope.launch {
-                val times =
-                    videoDetailRepository.getPgcSkipTimes(
-                        epid = epid.takeIf { seasonIdOverride == null },
-                        seasonId = seasonIdOverride ?: seasonId.takeIf { it != 0 },
-                    )
-                if (times.isNotEmpty()) {
-                    videoInfoRepository.updateSkipTimes(
-                        times.mapValues { (_, skip) ->
-                            SkipTimeInfo(
-                                introEndSec = skip.introEnd,
-                                outroStartSec = skip.outroStart,
-                                outroEndSec = skip.outroEnd,
-                            )
-                        },
-                    )
-                }
             }
         }
 
@@ -245,7 +223,7 @@ class SeasonDetailViewModel
             val lastCid = _uiState.value.historyLastPlayedCid
             if (lastCid != 0L) {
                 findEpisodeByCid(detail, lastCid)?.let {
-                    emitNavigateToPlayer(it)
+                    emitNavigateToPlayer(it, _uiState.value.historyLastPlayedTime.coerceAtLeast(0))
                     return
                 }
             }
@@ -254,7 +232,7 @@ class SeasonDetailViewModel
             if (progress != null) {
                 val lastEp = findEpisodeById(detail, progress.lastEpId)
                 if (lastEp != null) {
-                    emitNavigateToPlayer(lastEp)
+                    emitNavigateToPlayer(lastEp, progress.lastTime.coerceAtLeast(0))
                     return
                 }
             }
@@ -288,12 +266,16 @@ class SeasonDetailViewModel
                                 seasonId = targetSeasonId,
                                 preferApiType = prefApiType(),
                             )
+                        val local =
+                            playbackProgressRepository
+                                .get(Prefs.uid, 0L, detail.seasonId)
+                                ?.takeIf { findEpisodeByCid(detail, it.cid) != null }
                         _uiState.update {
                             it.copy(
                                 seasonDetail = detail,
                                 isFollowing = detail.userStatus.follow,
-                                historyLastPlayedCid = serverLastPlayedCid(detail),
-                                historyLastPlayedTime = detail.userStatus.progress?.lastTime ?: 0,
+                                historyLastPlayedCid = local?.cid ?: serverLastPlayedCid(detail),
+                                historyLastPlayedTime = local?.position ?: detail.userStatus.progress?.lastTime ?: 0,
                             )
                         }
                     }
@@ -312,7 +294,6 @@ class SeasonDetailViewModel
 
                 _uiState.update { it.copy(loading = false) }
             }
-            loadSkipTimes(seasonIdOverride = targetSeasonId)
         }
 
         /**
@@ -353,7 +334,10 @@ class SeasonDetailViewModel
         private fun serverLastPlayedCid(detail: SeasonDetail): Long =
             detail.userStatus.progress?.let { findEpisodeById(detail, it.lastEpId)?.cid } ?: 0L
 
-        private fun emitNavigateToPlayer(episode: Episode) {
+        private fun emitNavigateToPlayer(
+            episode: Episode,
+            position: Int = 0,
+        ) {
             // 与 UGC 详情页一致：跳转播放器前填充播放列表，使播放器内选集列表可用
             _uiState.value.seasonDetail?.let { detail ->
                 val episodeList =
@@ -362,7 +346,7 @@ class SeasonDetailViewModel
                             VideoListItem(
                                 aid = ep.aid,
                                 cid = ep.cid,
-                                epid = ep.epid,
+                                epid = ep.epid ?: ep.id,
                                 seasonId = detail.seasonId,
                                 title = ep.title,
                             )
@@ -377,7 +361,10 @@ class SeasonDetailViewModel
                         cid = episode.cid,
                         title = episode.title,
                         cover = episode.cover,
-                        epid = episode.epid,
+                        epid = episode.epid ?: episode.id,
+                        seasonId = _uiState.value.seasonDetail?.seasonId ?: 0,
+                        subType = _uiState.value.seasonDetail?.subType ?: 0,
+                        startPosition = position,
                     ),
                 )
             }

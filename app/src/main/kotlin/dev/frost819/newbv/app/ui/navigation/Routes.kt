@@ -36,6 +36,12 @@ data class VideoPlayerRoute(
     val epid: Long? = null,
     val title: String = "",
     val cover: String = "",
+    /** 番剧季标识，旧入口允许通过 epid 补齐。 */
+    val seasonId: Int = 0,
+    /** 番剧类型，用于心跳上报。 */
+    val subType: Int = 0,
+    /** 明确指定的起播位置（秒）；null 才查询历史，0 表示从头播放。 */
+    val startPosition: Int? = null,
 )
 
 /** 番剧播放器页面。 */

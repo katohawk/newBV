@@ -82,6 +82,8 @@ class PlayerViewModelTest {
     private lateinit var oneClickTripleActionRepository: OneClickTripleActionRepository
     private lateinit var cdnSelector: CdnSelector
     private lateinit var viewModel: PlayerViewModel
+    private val progressRepository =
+        mockk<dev.frost819.newbv.data.repository.PlaybackProgressRepository>(relaxed = true)
     private lateinit var mockPlayer: AbstractVideoPlayer
 
     @BeforeEach
@@ -105,6 +107,8 @@ class PlayerViewModelTest {
         every { Prefs.defaultQuality } returns Resolution.R1080P
         every { Prefs.defaultVideoCodec } returns VideoCodec.AVC
         every { Prefs.defaultAudio } returns Audio.A192K
+        every { Prefs.uid } returns 1L
+        every { Prefs.skipIntroOutro } returns false
         every { Prefs.incognitoMode } returns true
         every { Prefs.actionAfterPlay } returns ActionAfterPlay.Pause
         every { Prefs.defaultPlaySpeed } returns PlaySpeed.X1
@@ -130,6 +134,7 @@ class PlayerViewModelTest {
                 favoriteRepository = favoriteRepository,
                 oneClickTripleActionRepository = oneClickTripleActionRepository,
                 cdnSelector = cdnSelector,
+                playbackProgressRepository = progressRepository,
             )
     }
 
@@ -1164,6 +1169,7 @@ class PlayerViewModelTest {
 
     private fun fakeVideoDetail(cid: Long): VideoDetail {
         val detail = mockk<VideoDetail>()
+        every { detail.aid } returns 10L
         every { detail.cid } returns cid
         every { detail.author } returns Author(mid = 42L, name = "UP", face = "face")
         return detail
@@ -1198,5 +1204,143 @@ class PlayerViewModelTest {
 
             assertThat(viewModel.uiState.value.cid).isEqualTo(111L)
             viewModel.viewModelScope.cancel()
+        }
+
+    @Test
+    fun `auto skip runs once per episode and leaves pre intro and credits untouched`() =
+        runTest(testDispatcher) {
+            // Given
+            setVideoPlayer(mockPlayer)
+            every { Prefs.skipIntroOutro } returns true
+            every { videoInfoRepository.skipTimes } returns
+                MutableStateFlow(
+                    mapOf(
+                        10L to
+                            dev.frost819.newbv.app.data.SkipTimeInfo(
+                                introStartSec = 30,
+                                introEndSec = 90,
+                                outroStartSec = 1000,
+                                outroEndSec = 1100,
+                            ),
+                    ),
+                )
+            updateUiState { it.copy(aid = 1, cid = 10, playerState = PlayerState.Playing) }
+            val check =
+                PlayerViewModel::class.java.getDeclaredMethod(
+                    "checkAutoSkip",
+                    Long::class.javaPrimitiveType,
+                    Long::class.javaPrimitiveType,
+                )
+            check.isAccessible = true
+            // When / Then
+            check.invoke(viewModel, 0L, 1_200_000L)
+            verify(exactly = 0) { mockPlayer.seekTo(any()) }
+            check.invoke(viewModel, 30_000L, 1_200_000L)
+            check.invoke(viewModel, 30_000L, 1_200_000L)
+            verify(exactly = 1) { mockPlayer.seekTo(90_000L) }
+            check.invoke(viewModel, 1_100_000L, 1_200_000L)
+            verify(exactly = 0) { mockPlayer.seekTo(1_100_000L) }
+            check.invoke(viewModel, 1_000_000L, 1_200_000L)
+            verify(exactly = 1) { mockPlayer.seekTo(1_100_000L) }
+        }
+
+    @Test
+    fun `disabled skip never seeks and switching episode resets skipped flag`() =
+        runTest(testDispatcher) {
+            setVideoPlayer(mockPlayer)
+            every { videoInfoRepository.skipTimes } returns
+                MutableStateFlow(
+                    mapOf(
+                        10L to
+                            dev.frost819.newbv.app.data
+                                .SkipTimeInfo(introEndSec = 90),
+                    ),
+                )
+            updateUiState { it.copy(aid = 1, cid = 10, playerState = PlayerState.Playing) }
+            val check =
+                PlayerViewModel::class.java.getDeclaredMethod(
+                    "checkAutoSkip",
+                    Long::class.javaPrimitiveType,
+                    Long::class.javaPrimitiveType,
+                )
+            check.isAccessible = true
+            check.invoke(viewModel, 0L, 1_200_000L)
+            verify(exactly = 0) { mockPlayer.seekTo(any()) }
+            every { Prefs.skipIntroOutro } returns true
+            check.invoke(viewModel, 0L, 1_200_000L)
+            viewModel.playNewVideo(VideoListItem(aid = 1, cid = 10, title = "重播"))
+            updateUiState { it.copy(playerState = PlayerState.Playing) }
+            check.invoke(viewModel, 0L, 1_200_000L)
+            verify(exactly = 2) { mockPlayer.seekTo(90_000L) }
+        }
+
+    @Test
+    fun `local progress saves only successful playback and records new episode identity`() =
+        runTest(testDispatcher) {
+            setVideoPlayer(mockPlayer)
+            every { Prefs.incognitoMode } returns false
+            every { mockPlayer.currentPosition } returns 5000L
+            every { mockPlayer.duration } returns 60000L
+            updateUiState { it.copy(aid = 2, cid = 20, epid = 2, seasonId = 100, fromSeason = true) }
+            viewModel.trySendHeartbeat()
+            verify(exactly = 0) { progressRepository.save(any(), any(), any()) }
+            getVideoPlayerListener().onPlay()
+            verify {
+                progressRepository.save(
+                    any(),
+                    match {
+                        it.aid == 2L &&
+                            it.cid == 20L &&
+                            it.seasonId == 100 &&
+                            it.position == 5
+                    },
+                    false,
+                )
+            }
+            viewModel.playNewVideo(VideoListItem(aid = 3, cid = 30, epid = 3, seasonId = 100, title = "第三集"))
+            assertThat(viewModel.uiState.value.fromSeason).isTrue()
+            viewModel.trySendHeartbeat()
+            verify(exactly = 0) { progressRepository.save(any(), match { it.cid == 30L }, any()) }
+            viewModel.playNewVideo(VideoListItem(aid = 4, cid = 40, title = "普通视频"))
+            assertThat(viewModel.uiState.value.fromSeason).isFalse()
+        }
+
+    @Test
+    fun `PGC heartbeat carries season identity while UGC uses video type`() =
+        runTest(testDispatcher) {
+            setVideoPlayer(mockPlayer)
+            every { Prefs.incognitoMode } returns false
+            every { mockPlayer.currentPosition } returns 5000L
+            every { mockPlayer.duration } returns 60000L
+            updateUiState { it.copy(aid = 2, cid = 20, epid = 2, seasonId = 100, subType = 1, fromSeason = true) }
+            getVideoPlayerListener().onPlay()
+            viewModel.trySendHeartbeat()
+            coVerify(timeout = 3000) {
+                videoPlayRepository.sendHeartbeat(
+                    2,
+                    20,
+                    5,
+                    dev.frost819.newbv.biliapi.entity.video.HeartbeatVideoType.Season,
+                    1,
+                    2,
+                    100,
+                    dev.frost819.newbv.biliapi.entity.ApiType.Web,
+                )
+            }
+            updateUiState { it.copy(aid = 3, cid = 30, epid = null, seasonId = 0, fromSeason = false) }
+            getVideoPlayerListener().onPlay()
+            viewModel.trySendHeartbeat()
+            coVerify(timeout = 3000) {
+                videoPlayRepository.sendHeartbeat(
+                    3,
+                    30,
+                    5,
+                    dev.frost819.newbv.biliapi.entity.video.HeartbeatVideoType.Video,
+                    null,
+                    null,
+                    null,
+                    dev.frost819.newbv.biliapi.entity.ApiType.Web,
+                )
+            }
         }
 }

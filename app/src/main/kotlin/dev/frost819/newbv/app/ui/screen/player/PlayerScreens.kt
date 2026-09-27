@@ -50,10 +50,10 @@ fun NavGraphBuilder.videoPlayerScreen(navController: NavController) {
                 cid = route.cid,
                 epid = route.epid?.toInt(),
                 title = route.title,
-                lastPlayed = 0,
-                fromSeason = false,
-                subType = 0,
-                seasonId = 0,
+                lastPlayed = route.startPosition?.coerceAtLeast(0) ?: 0,
+                fromSeason = (route.epid ?: 0) > 0 || route.seasonId > 0,
+                subType = route.subType,
+                seasonId = route.seasonId,
                 authorName = "",
             )
             // 2. 设置当前视频 aid（过滤 repository 数据，防止叠加打开错位）
@@ -64,7 +64,8 @@ fun NavGraphBuilder.videoPlayerScreen(navController: NavController) {
             danmakuViewModel.init()
             // 5. 加载视频详情（获取正确 cid、相关视频、历史进度）
             //    仅当历史 cid 与当前 cid 一致时才应用断点续播
-            playerViewModel.loadVideoDetail(route.aid, route.bvid)
+            playerViewModel.loadVideoDetail(route.aid, route.bvid, route.startPosition)
+            if (playerViewModel.uiState.value.playerState is PlayerState.Error) return@LaunchedEffect
             // 6. 使用正确的 cid 加载弹幕、字幕（route.cid 可能为 0，需从详情获取）
             //    弹幕分段加载按历史进度（秒 → 毫秒）定位初始分段
             val actualCid = playerViewModel.uiState.value.cid

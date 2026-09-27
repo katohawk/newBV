@@ -50,6 +50,9 @@ class SeasonDetailViewModelTest {
     @BeforeEach
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
+        io.mockk.mockkObject(dev.frost819.newbv.data.datastore.Prefs)
+        every { dev.frost819.newbv.data.datastore.Prefs.uid } returns 1L
+        every { dev.frost819.newbv.data.datastore.Prefs.apiType } returns dev.frost819.newbv.data.datastore.ApiType.Web
         videoDetailRepository = mockk()
         userRepository = mockk()
         videoInfoRepository = mockk()
@@ -60,6 +63,7 @@ class SeasonDetailViewModelTest {
 
     @AfterEach
     fun tearDown() {
+        io.mockk.unmockkObject(dev.frost819.newbv.data.datastore.Prefs)
         Dispatchers.resetMain()
     }
 
@@ -69,6 +73,7 @@ class SeasonDetailViewModelTest {
             videoDetailRepository = videoDetailRepository,
             userRepository = userRepository,
             videoInfoRepository = videoInfoRepository,
+            playbackProgressRepository = mockk(relaxed = true),
             savedStateHandle = savedStateHandle,
         )
     }

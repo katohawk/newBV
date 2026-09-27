@@ -14,11 +14,13 @@ import dev.frost819.newbv.core.log.Loggers
 import dev.frost819.newbv.data.datastore.Prefs
 import dev.frost819.newbv.data.quickentry.QuickEntry
 import dev.frost819.newbv.data.quickentry.QuickEntryRepository
+import dev.frost819.newbv.data.quickentry.QuickEntryType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -99,8 +101,35 @@ class HomeViewModel
             if (Prefs.isLogin) loadDynamic()
 
             viewModelScope.launch {
-                quickEntryRepository.entries.collect { entries ->
+                val avatars = mutableMapOf<Long, String>()
+                quickEntryRepository.entries.collectLatest { entries ->
                     _uiState.update { it.copy(quickEntries = entries) }
+                    // 旧收藏可能来自未携带头像的入口；先展示卡片，再补图，不阻塞推荐流。
+                    entries.filter { it.type == QuickEntryType.UP && it.cover.isBlank() }.forEach { entry ->
+                        val face =
+                            runCatching {
+                                avatars[entry.mid] ?: withTimeout(LOAD_TIMEOUT_MS) {
+                                    userRepository.getUserInfo(entry.mid).face
+                                }
+                            }.getOrElse { error ->
+                                if (error is CancellationException && error !is TimeoutCancellationException) {
+                                    throw error
+                                }
+                                logger.error(error) { "Failed to load favorite UP avatar" }
+                                ""
+                            }
+                        if (face.isNotBlank()) {
+                            avatars[entry.mid] = face
+                            _uiState.update { state ->
+                                state.copy(
+                                    quickEntries =
+                                        state.quickEntries.map {
+                                            if (it.key == entry.key) it.copy(cover = face) else it
+                                        },
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

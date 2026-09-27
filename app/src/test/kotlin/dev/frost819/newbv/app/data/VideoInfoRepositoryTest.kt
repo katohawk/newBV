@@ -15,9 +15,11 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterEach
@@ -33,17 +35,22 @@ import java.util.Date
 class VideoInfoRepositoryTest {
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var videoDetailRepository: VideoDetailRepository
+    private val progress = mockk<dev.frost819.newbv.data.repository.PlaybackProgressRepository>()
     private lateinit var repository: VideoInfoRepository
 
     @BeforeEach
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
+        io.mockk.mockkObject(dev.frost819.newbv.data.datastore.Prefs)
+        io.mockk.every { dev.frost819.newbv.data.datastore.Prefs.uid } returns 1L
         videoDetailRepository = mockk()
-        repository = VideoInfoRepository(videoDetailRepository)
+        coEvery { progress.get(any(), any(), any()) } returns null
+        repository = VideoInfoRepository(videoDetailRepository, progress)
     }
 
     @AfterEach
     fun tearDown() {
+        io.mockk.unmockkObject(dev.frost819.newbv.data.datastore.Prefs)
         Dispatchers.resetMain()
     }
 
@@ -353,5 +360,87 @@ class VideoInfoRepositoryTest {
             assertThat(repository.videoDetail.value).isNull()
             assertThat(repository.relatedVideos.value).isEmpty()
             assertThat(repository.videoSharedState.value).isNull()
+        }
+
+    @Test
+    fun `local progress survives stale server refresh`() =
+        runTest(testDispatcher) {
+            coEvery { videoDetailRepository.getVideoDetail(any(), any(), any()) } returns
+                fakeVideoDetail(history = VideoDetail.History(30, 10))
+            coEvery { progress.get(any(), any(), any()) } returns
+                dev.frost819.newbv.data.repository
+                    .PlaybackProgress(1, 20, position = 120)
+            repository.loadVideoDetail(1, ApiType.Web)
+            assertThat(repository.videoSharedState.value?.lastPlayedCid).isEqualTo(20)
+            assertThat(repository.videoSharedState.value?.lastPlayedTime).isEqualTo(120)
+            repository.updateVideoDetail(fakeVideoDetail(history = VideoDetail.History(30, 10)))
+            assertThat(repository.videoSharedState.value?.lastPlayedCid).isEqualTo(20)
+        }
+
+    @Test
+    fun `cancelled skip request cannot overwrite next episode markers`() =
+        runTest(testDispatcher) {
+            coEvery { videoDetailRepository.getPgcSkipTimes(1, 100) } coAnswers {
+                kotlinx.coroutines.delay(1000)
+                mapOf(
+                    10L to
+                        dev.frost819.newbv.biliapi.entity.video.season
+                            .EpisodeSkipTimes(introEnd = 90),
+                )
+            }
+            coEvery { videoDetailRepository.getPgcSkipTimes(2, 100) } returns
+                mapOf(
+                    20L to
+                        dev.frost819.newbv.biliapi.entity.video.season
+                            .EpisodeSkipTimes(introStart = 30, introEnd = 90),
+                )
+            val old = launch { repository.loadSkipTimes(1, 100) }
+            runCurrent()
+            old.cancel()
+            repository.loadSkipTimes(2, 100)
+            advanceUntilIdle()
+            assertThat(repository.skipTimes.value.keys).containsExactly(20L)
+            assertThat(repository.skipTimes.value[20L]?.introStartSec).isEqualTo(30)
+        }
+
+    @Test
+    fun `shared progress from another account is not preserved`() {
+        repository.updateVideoDetail(fakeVideoDetail())
+        repository.updateHistory(120, 20, 1)
+        io.mockk.every { dev.frost819.newbv.data.datastore.Prefs.uid } returns 2L
+        repository.updateVideoDetail(fakeVideoDetail(history = VideoDetail.History(30, 10)))
+        assertThat(repository.videoSharedState.value?.lastPlayedCid).isEqualTo(10)
+        assertThat(repository.videoSharedState.value?.lastPlayedTime).isEqualTo(30)
+    }
+
+    @Test
+    fun `PGC episodes never inherit season cids as UGC subpages`() =
+        runTest(testDispatcher) {
+            // Given: a stale first-episode entry incorrectly contains another episode's CID.
+            val first =
+                VideoListItem(
+                    aid = 31703892,
+                    cid = 55444073,
+                    epid = 249469,
+                    seasonId = 357,
+                    title = "1",
+                    ugcPages =
+                        listOf(
+                            VideoPage(
+                                cid = 55444265,
+                                index = 11,
+                                title = "11",
+                                duration = 405,
+                                dimension = Dimension(640, 480),
+                            ),
+                        ),
+                )
+            val next = VideoListItem(aid = 506767441, cid = 55444265, epid = 249479, seasonId = 357, title = "11")
+            repository.updateVideoList(listOf(first, next))
+            // When
+            repository.updateUgcPages(ApiType.Web)
+            // Then: keep each episode's complete identity, without fabricated child parts.
+            assertThat(repository.videoList.value).containsExactly(first.copy(ugcPages = null), next).inOrder()
+            coVerify(exactly = 0) { videoDetailRepository.getUgcPages(any(), any()) }
         }
 }
