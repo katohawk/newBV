@@ -5,8 +5,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.google.common.truth.Truth.assertThat
 import dev.frost819.newbv.biliapi.repositories.SearchType
-import java.nio.file.Files
-import org.junit.jupiter.api.Test
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -15,6 +13,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.Test
+import java.nio.file.Files
 
 /**
  * [QuickEntryRepository] 与收藏合并逻辑的单元测试。
@@ -44,43 +44,45 @@ class QuickEntryRepositoryTest {
     }
 
     @Test
-    fun `persistent store survives complete recreation and removal`() = runBlocking {
-        val directory = Files.createTempDirectory("newbv-quick-entry").toFile()
-        val file = directory.resolve("test.preferences_pb")
-        var job = SupervisorJob()
-        fun repository() =
-            QuickEntryRepository(
-                PreferenceDataStoreFactory.create(
-                    scope = CoroutineScope(Dispatchers.IO + job),
-                    produceFile = { file },
-                ),
-            )
-        try {
-            var store = repository()
-            store.setSaved(video, true)
-            store.setSaved(season, true)
-            store.setSaved(search, true)
-            // 重复收藏不产生重复数据，且最近收藏在前
-            store.setSaved(search, true)
-            assertThat(store.entries.first()).isEqualTo(listOf(search, season, video))
+    fun `persistent store survives complete recreation and removal`() =
+        runBlocking {
+            val directory = Files.createTempDirectory("newbv-quick-entry").toFile()
+            val file = directory.resolve("test.preferences_pb")
+            var job = SupervisorJob()
 
-            // 模拟 App 数据层完全重建
-            job.cancelAndJoin()
-            job = SupervisorJob()
-            store = repository()
-            assertThat(store.entries.first()).isEqualTo(listOf(search, season, video))
+            fun repository() =
+                QuickEntryRepository(
+                    PreferenceDataStoreFactory.create(
+                        scope = CoroutineScope(Dispatchers.IO + job),
+                        produceFile = { file },
+                    ),
+                )
+            try {
+                var store = repository()
+                store.setSaved(video, true)
+                store.setSaved(season, true)
+                store.setSaved(search, true)
+                // 重复收藏不产生重复数据，且最近收藏在前
+                store.setSaved(search, true)
+                assertThat(store.entries.first()).isEqualTo(listOf(search, season, video))
 
-            // 取消收藏
-            store.setSaved(season, false)
-            assertThat(store.entries.first()).isEqualTo(listOf(search, video))
-            job.cancelAndJoin()
-            job = SupervisorJob()
-            assertThat(repository().entries.first()).isEqualTo(listOf(search, video))
-        } finally {
-            job.cancelAndJoin()
-            directory.deleteRecursively()
+                // 模拟 App 数据层完全重建
+                job.cancelAndJoin()
+                job = SupervisorJob()
+                store = repository()
+                assertThat(store.entries.first()).isEqualTo(listOf(search, season, video))
+
+                // 取消收藏
+                store.setSaved(season, false)
+                assertThat(store.entries.first()).isEqualTo(listOf(search, video))
+                job.cancelAndJoin()
+                job = SupervisorJob()
+                assertThat(repository().entries.first()).isEqualTo(listOf(search, video))
+            } finally {
+                job.cancelAndJoin()
+                directory.deleteRecursively()
+            }
         }
-    }
 
     @Test
     fun `bad record or unknown type does not hide other entries`() {
@@ -92,26 +94,27 @@ class QuickEntryRepositoryTest {
     }
 
     @Test
-    fun `edits preserve future entries`() = runBlocking {
-        val directory = Files.createTempDirectory("newbv-quick-entry-future").toFile()
-        val job = SupervisorJob()
-        try {
-            val dataStore =
-                PreferenceDataStoreFactory.create(
-                    scope = CoroutineScope(Dispatchers.IO + job),
-                    produceFile = { directory.resolve("test.preferences_pb") },
-                )
-            val unknown = "{\"type\":\"Future\",\"title\":\"unknown\",\"extra\":42}"
-            dataStore.edit { it[stringPreferencesKey("quick_entries_v1")] = "[$unknown]" }
-            val repository = QuickEntryRepository(dataStore)
-            repository.setSaved(video, true)
-            repository.setSaved(video, false)
-            assertThat(dataStore.data.first()[QuickEntryRepository.preferenceKey]).isEqualTo("[$unknown]")
-        } finally {
-            job.cancelAndJoin()
-            directory.deleteRecursively()
+    fun `edits preserve future entries`() =
+        runBlocking {
+            val directory = Files.createTempDirectory("newbv-quick-entry-future").toFile()
+            val job = SupervisorJob()
+            try {
+                val dataStore =
+                    PreferenceDataStoreFactory.create(
+                        scope = CoroutineScope(Dispatchers.IO + job),
+                        produceFile = { directory.resolve("test.preferences_pb") },
+                    )
+                val unknown = "{\"type\":\"Future\",\"title\":\"unknown\",\"extra\":42}"
+                dataStore.edit { it[stringPreferencesKey("quick_entries_v1")] = "[$unknown]" }
+                val repository = QuickEntryRepository(dataStore)
+                repository.setSaved(video, true)
+                repository.setSaved(video, false)
+                assertThat(dataStore.data.first()[QuickEntryRepository.preferenceKey]).isEqualTo("[$unknown]")
+            } finally {
+                job.cancelAndJoin()
+                directory.deleteRecursively()
+            }
         }
-    }
 
     @Test
     fun `first batch deduplication keeps later pages and source indexes`() {

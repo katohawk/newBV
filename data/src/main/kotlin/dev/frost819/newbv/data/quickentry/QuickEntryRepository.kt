@@ -5,9 +5,6 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
-import java.io.IOException
-import javax.inject.Inject
-import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -16,6 +13,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import java.io.IOException
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * 首页快捷收藏仓库。
@@ -82,7 +82,6 @@ class QuickEntryRepository
                     ?.takeIf { it.isValid }
 
             /** 容错解码：任何一条损坏或类型未知都只跳过该条。 */
-            fun decode(value: String?): List<QuickEntry> =
-                records(value).mapNotNull { entry(it) }.distinctBy { it.key }
+            fun decode(value: String?): List<QuickEntry> = records(value).mapNotNull { entry(it) }.distinctBy { it.key }
         }
     }

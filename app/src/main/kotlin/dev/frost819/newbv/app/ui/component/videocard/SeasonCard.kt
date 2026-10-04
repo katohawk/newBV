@@ -78,79 +78,78 @@ fun SeasonCard(
                         ),
                 ),
         ) {
-        Column {
-            Box(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(MaterialTheme.shapes.large),
-                contentAlignment = Alignment.BottomCenter,
-            ) {
-                AsyncImage(
+            Column {
+                Box(
                     modifier =
                         Modifier
                             .fillMaxWidth()
-                            .aspectRatio(0.75f)
                             .clip(MaterialTheme.shapes.large),
-                    model = data.cover,
-                    contentDescription = null,
-                    contentScale = ContentScale.FillBounds,
-                )
-
-                if (data.hasRating) {
-                    Box(
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    AsyncImage(
                         modifier =
                             Modifier
-                                .height(48.dp)
                                 .fillMaxWidth()
-                                .background(
-                                    Brush.verticalGradient(
-                                        colors =
-                                            listOf(
-                                                Color.Transparent,
-                                                Color.Black.copy(alpha = 0.8f),
-                                            ),
+                                .aspectRatio(0.75f)
+                                .clip(MaterialTheme.shapes.large),
+                        model = data.cover,
+                        contentDescription = null,
+                        contentScale = ContentScale.FillBounds,
+                    )
+
+                    if (data.hasRating) {
+                        Box(
+                            modifier =
+                                Modifier
+                                    .height(48.dp)
+                                    .fillMaxWidth()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors =
+                                                listOf(
+                                                    Color.Transparent,
+                                                    Color.Black.copy(alpha = 0.8f),
+                                                ),
+                                        ),
                                     ),
-                                ),
-                    )
-                    Text(
-                        modifier =
-                            Modifier
-                                .align(Alignment.BottomEnd)
-                                .fillMaxWidth()
-                                .padding(8.dp, 0.dp),
-                        text = data.rating ?: "",
-                        fontStyle = FontStyle.Italic,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 24.sp,
-                        textAlign = TextAlign.End,
-                    )
+                        )
+                        Text(
+                            modifier =
+                                Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .fillMaxWidth()
+                                    .padding(8.dp, 0.dp),
+                            text = data.rating ?: "",
+                            fontStyle = FontStyle.Italic,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 24.sp,
+                            textAlign = TextAlign.End,
+                        )
+                    }
                 }
-            }
 
-            Column(
-                modifier = Modifier.padding(8.dp),
-            ) {
-                Text(
-                    text = data.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (!data.subTitle.isNullOrEmpty()) {
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                ) {
                     Text(
-                        text = data.subTitle,
+                        text = data.title,
+                        style = MaterialTheme.typography.titleMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                     )
+                    if (!data.subTitle.isNullOrEmpty()) {
+                        Text(
+                            text = data.subTitle,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        )
+                    }
                 }
             }
-        }
 
-        quickEntry?.let { entry -> QuickEntryButton(entry) }
+            quickEntry?.let { entry -> QuickEntryButton(entry) }
         }
     }
 }
-

@@ -168,8 +168,7 @@ fun LeftNaviContent(
                                 if (it.hasFocus && item != selectedItem) {
                                     onLeftNaviItemChanged(item)
                                 }
-                            }
-                            .selectionIndicator(indicatorColor),
+                            }.selectionIndicator(indicatorColor),
                     onClick = { onLeftNaviItemChanged(item) },
                     selected = isFocused,
                     icon = {

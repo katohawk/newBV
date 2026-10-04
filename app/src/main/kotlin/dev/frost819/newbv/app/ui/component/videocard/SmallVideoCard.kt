@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.VerticalAlignTop
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,9 +41,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.VerticalAlignTop
-import androidx.compose.material.icons.outlined.StarBorder
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
@@ -132,7 +132,10 @@ fun SmallVideoCard(
                             contentDescription = "UP主主页",
                             onAction = it,
                         ) {
-                            Icon(painter = painterResource(id = R.drawable.contact_page_24px), contentDescription = null)
+                            Icon(
+                                painter = painterResource(id = R.drawable.contact_page_24px),
+                                contentDescription = null,
+                            )
                         },
                     )
                 }
@@ -200,26 +203,26 @@ fun SmallVideoCard(
                 if (openActionsOnLongPress && hasAnyAction) showActions = true
             },
             modifier =
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(1.6f)
-                .touchClickable(
-                    onClick = { if (!showActions) onClick() },
-                    onLongClick = { if (openActionsOnLongPress && hasAnyAction) showActions = true },
-                ).onFocusChanged { focusState ->
-                    if (!focusState.hasFocus) showActions = false
-                }.onKeyEvent { event ->
-                    // 遥控器菜单键与长按等效：弹出/收起快捷操作面板；
-                    // 消费事件后不会再冒泡到 HomeContent 触发刷新
-                    if (event.key == Key.Menu && event.type == KeyEventType.KeyUp && hasAnyAction) {
-                        showActions = !showActions
-                        // 菜单键打开时无需长按防误触保护
-                        releaseLongPress = showActions
-                        true
-                    } else {
-                        false
-                    }
-                },
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1.6f)
+                    .touchClickable(
+                        onClick = { if (!showActions) onClick() },
+                        onLongClick = { if (openActionsOnLongPress && hasAnyAction) showActions = true },
+                    ).onFocusChanged { focusState ->
+                        if (!focusState.hasFocus) showActions = false
+                    }.onKeyEvent { event ->
+                        // 遥控器菜单键与长按等效：弹出/收起快捷操作面板；
+                        // 消费事件后不会再冒泡到 HomeContent 触发刷新
+                        if (event.key == Key.Menu && event.type == KeyEventType.KeyUp && hasAnyAction) {
+                            showActions = !showActions
+                            // 菜单键打开时无需长按防误触保护
+                            releaseLongPress = showActions
+                            true
+                        } else {
+                            false
+                        }
+                    },
             shape = CardDefaults.shape(MaterialTheme.shapes.large),
             border =
                 CardDefaults.border(

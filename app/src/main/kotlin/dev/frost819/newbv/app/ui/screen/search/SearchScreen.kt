@@ -6,9 +6,9 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
-import dev.frost819.newbv.biliapi.repositories.SearchType
 import dev.frost819.newbv.app.ui.navigation.SearchResultRoute
 import dev.frost819.newbv.app.viewmodel.search.SearchResultViewModel
+import dev.frost819.newbv.biliapi.repositories.SearchType
 
 /**
  * 搜索结果页导航注册。
