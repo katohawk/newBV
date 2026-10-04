@@ -7,15 +7,16 @@ import dev.frost819.newbv.app.data.AccountRepositoryImpl
 import dev.frost819.newbv.biliapi.entity.home.RecommendPage
 import dev.frost819.newbv.biliapi.entity.rank.PopularVideoPage
 import dev.frost819.newbv.biliapi.entity.ugc.UgcItem
-import dev.frost819.newbv.biliapi.entity.user.DynamicVideo
 import dev.frost819.newbv.biliapi.repositories.RecommendVideoRepository
 import dev.frost819.newbv.biliapi.repositories.UserRepository
 import dev.frost819.newbv.core.log.Loggers
+import dev.frost819.newbv.data.datastore.HomeTopNavItem
 import dev.frost819.newbv.data.datastore.Prefs
 import dev.frost819.newbv.data.quickentry.QuickEntry
 import dev.frost819.newbv.data.quickentry.QuickEntryRepository
 import dev.frost819.newbv.data.quickentry.QuickEntryType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,10 +48,6 @@ data class HomeUiState(
     val popularLoading: Boolean = false,
     val popularHasMore: Boolean = true,
     val popularError: Boolean = false,
-    val dynamicItems: List<DynamicVideo> = emptyList(),
-    val dynamicLoading: Boolean = false,
-    val dynamicHasMore: Boolean = true,
-    val dynamicError: Boolean = false,
     /** 本地保存的首页快捷收藏（最近收藏在前）。 */
     val quickEntries: List<QuickEntry> = emptyList(),
     val isLogin: Boolean = false,
@@ -60,11 +57,11 @@ data class HomeUiState(
 /**
  * 首页 ViewModel。
  *
- * 管理推荐、热门、动态三个 Tab 的数据加载、分页、刷新。
+ * 按可见 Tab 管理推荐、热门的数据加载、分页、刷新。
  * 使用 [StateFlow] 暴露状态，UI 通过 [uiState] 观察。
  *
  * @property recommendVideoRepository 推荐/热门数据仓库。
- * @property userRepository 动态数据仓库。
+ * @property userRepository 收藏 UP 主的头像数据仓库。
  * @property accountRepository 账户仓库（监听登录状态变化）。
  */
 @HiltViewModel
@@ -86,19 +83,22 @@ class HomeViewModel
             }
 
         private val _uiState = MutableStateFlow(HomeUiState())
+
+        /** 当前账户的首页列表及加载状态。 */
         val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
         private var recommendNextPage = RecommendPage()
         private var popularNextPage = PopularVideoPage()
-        private var dynamicCurrentPage = 0
-        private var dynamicHistoryOffset: String? = null
-        private var dynamicUpdateBaseline: String? = null
+        private var recommendJob: Job? = null
+        private var popularJob: Job? = null
+        private var recommendGeneration = 0
+        private var popularGeneration = 0
+        private var recommendLoaded = false
+        private var popularLoaded = false
 
         init {
-            _uiState.update { it.copy(isLogin = Prefs.isLogin) }
-            loadRecommend()
-            loadPopular()
-            if (Prefs.isLogin) loadDynamic()
+            val account = accountRepository.uiState.value
+            _uiState.update { it.copy(isLogin = account.isLogin, currentUid = account.uid) }
 
             viewModelScope.launch {
                 val avatars = mutableMapOf<Long, String>()
@@ -138,10 +138,11 @@ class HomeViewModel
                     .map { it.uid to it.isLogin }
                     .distinctUntilChanged()
                     .collect { (uid, isLogin) ->
-                        if (isLogin != _uiState.value.isLogin) {
-                            updateLoginState(isLogin)
-                        } else if (isLogin && uid != 0L && uid != _uiState.value.currentUid) {
-                            onUserSwitched(uid)
+                        val current = _uiState.value
+                        if (uid != current.currentUid || isLogin != current.isLogin) {
+                            invalidateRecommend()
+                            invalidatePopular()
+                            _uiState.update { it.copy(currentUid = uid, isLogin = isLogin) }
                         }
                     }
             }
@@ -158,78 +159,89 @@ class HomeViewModel
          * 最终为空时才置 [HomeUiState.recommendError]。
          */
         fun loadRecommend() {
-            viewModelScope.launch {
-                val current = _uiState.value
-                if (current.recommendLoading) return@launch
-
-                _uiState.update { it.copy(recommendLoading = true, recommendError = false) }
-
-                // 首次加载（列表为空）需要连续请求补齐首屏；已有数据时每次只追加一页，
-                val isFirstLoad = current.recommendItems.isEmpty()
-                val maxLoadCount = if (isFirstLoad) 3 else 1
-                var loadCount = 0
-                var failed = false
-                while (loadCount < maxLoadCount) {
-                    val data =
-                        try {
-                            withTimeout(LOAD_TIMEOUT_MS) {
-                                recommendVideoRepository.getRecommendVideos(
-                                    page = recommendNextPage,
-                                    preferApiType = prefApiType(),
-                                )
+            val current = _uiState.value
+            if (current.recommendLoading || !current.recommendHasMore) return
+            val generation = recommendGeneration
+            _uiState.update { it.copy(recommendLoading = true, recommendError = false) }
+            recommendJob =
+                viewModelScope.launch {
+                    // 首次加载（列表为空）需要连续请求补齐首屏；已有数据时每次只追加一页，
+                    val isFirstLoad = current.recommendItems.isEmpty()
+                    val maxLoadCount = if (isFirstLoad) 3 else 1
+                    var loadCount = 0
+                    var failed = false
+                    while (loadCount < maxLoadCount) {
+                        val data =
+                            try {
+                                withTimeout(LOAD_TIMEOUT_MS) {
+                                    recommendVideoRepository.getRecommendVideos(
+                                        page = recommendNextPage,
+                                        preferApiType = prefApiType(),
+                                    )
+                                }
+                            } catch (error: TimeoutCancellationException) {
+                                logger.error(error) { "Load recommend videos timeout" }
+                                failed = true
+                                break
+                            } catch (error: CancellationException) {
+                                // 非超时的取消（如 ViewModel cleared）必须重新抛出，否则破坏取消机制
+                                throw error
+                            } catch (error: Throwable) {
+                                logger.error(error) { "Failed to load recommend videos" }
+                                failed = true
+                                break
                             }
-                        } catch (error: TimeoutCancellationException) {
-                            logger.error(error) { "Load recommend videos timeout" }
-                            failed = true
-                            break
-                        } catch (error: CancellationException) {
-                            // 非超时的取消（如 ViewModel cleared）必须重新抛出，否则破坏取消机制
-                            throw error
-                        } catch (error: Throwable) {
-                            logger.error(error) { "Failed to load recommend videos" }
-                            failed = true
+
+                        if (generation != recommendGeneration) return@launch
+                        recommendNextPage = data.nextPage
+                        if (data.items.isEmpty()) {
+                            _uiState.update { it.copy(recommendHasMore = false) }
                             break
                         }
-
-                    recommendNextPage = data.nextPage
-                    if (data.items.isEmpty()) {
-                        _uiState.update { it.copy(recommendHasMore = false) }
-                        break
+                        _uiState.update {
+                            it.copy(recommendItems = it.recommendItems + data.items)
+                        }
+                        loadCount++
+                        if (!isFirstLoad || _uiState.value.recommendItems.size >= 24) break
                     }
-                    _uiState.update {
-                        it.copy(recommendItems = it.recommendItems + data.items)
+
+                    if (generation != recommendGeneration) return@launch
+                    recommendLoaded = !failed || _uiState.value.recommendItems.isNotEmpty()
+                    // 记录初始批大小，供首页收藏去重使用（只影响第一批展示）
+                    if (isFirstLoad) {
+                        _uiState.update { it.copy(recommendFirstBatchSize = it.recommendItems.size) }
                     }
-                    loadCount++
-                    if (!isFirstLoad || _uiState.value.recommendItems.size >= 24) break
-                }
 
-                // 记录初始批大小，供首页收藏去重使用（只影响第一批展示）
-                if (isFirstLoad) {
-                    _uiState.update { it.copy(recommendFirstBatchSize = it.recommendItems.size) }
+                    // 首屏补齐失败时，只要已拿到部分数据就静默停止（避免"部分列表 + 报错"）；
+                    // 加载更多失败则照常报错，让底部提示可重试
+                    val hasItems = _uiState.value.recommendItems.isNotEmpty()
+                    val showError = failed && (!hasItems || !isFirstLoad)
+                    _uiState.update { it.copy(recommendLoading = false, recommendError = showError) }
                 }
-
-                // 首屏补齐失败时，只要已拿到部分数据就静默停止（避免"部分列表 + 报错"）；
-                // 加载更多失败则照常报错，让底部提示可重试
-                val hasItems = _uiState.value.recommendItems.isNotEmpty()
-                val showError = failed && (!hasItems || !isFirstLoad)
-                _uiState.update { it.copy(recommendLoading = false, recommendError = showError) }
-            }
         }
 
         /**
          * 清空推荐数据并重新加载。
          */
         fun refreshRecommend() {
+            invalidateRecommend()
+            loadRecommend()
+        }
+
+        private fun invalidateRecommend() {
+            recommendGeneration++
+            recommendJob?.cancel()
+            recommendLoaded = false
             recommendNextPage = RecommendPage()
             _uiState.update {
                 it.copy(
                     recommendItems = emptyList(),
                     recommendFirstBatchSize = 0,
+                    recommendLoading = false,
                     recommendHasMore = true,
                     recommendError = false,
                 )
             }
-            loadRecommend()
         }
 
         /**
@@ -238,19 +250,22 @@ class HomeViewModel
          * 超过 [LOAD_TIMEOUT_MS] 未返回时标记为加载失败。
          */
         fun loadPopular() {
-            viewModelScope.launch {
-                val current = _uiState.value
-                if (current.popularLoading) return@launch
-
-                _uiState.update { it.copy(popularLoading = true, popularError = false) }
-
-                runCatching {
-                    withTimeout(LOAD_TIMEOUT_MS) {
+            val current = _uiState.value
+            if (current.popularLoading || !current.popularHasMore) return
+            val generation = popularGeneration
+            _uiState.update { it.copy(popularLoading = true, popularError = false) }
+            popularJob =
+                viewModelScope.launch {
+                    runCatching {
                         val data =
-                            recommendVideoRepository.getPopularVideos(
-                                page = popularNextPage,
-                                preferApiType = prefApiType(),
-                            )
+                            withTimeout(LOAD_TIMEOUT_MS) {
+                                recommendVideoRepository.getPopularVideos(
+                                    page = popularNextPage,
+                                    preferApiType = prefApiType(),
+                                )
+                            }
+                        if (generation != popularGeneration) return@launch
+                        popularLoaded = true
                         popularNextPage = data.nextPage
                         _uiState.update {
                             it.copy(
@@ -258,151 +273,76 @@ class HomeViewModel
                                 popularHasMore = !data.noMore,
                             )
                         }
+                    }.onFailure { error ->
+                        if (error is CancellationException && error !is TimeoutCancellationException) {
+                            throw error
+                        }
+                        if (generation != popularGeneration) return@onFailure
+                        logger.error(error) { "Failed to load popular videos" }
+                        _uiState.update { it.copy(popularError = true) }
                     }
-                }.onFailure { error ->
-                    if (error is CancellationException && error !is TimeoutCancellationException) {
-                        throw error
-                    }
-                    logger.error(error) { "Failed to load popular videos" }
-                    _uiState.update { it.copy(popularError = true) }
-                }
 
-                _uiState.update { it.copy(popularLoading = false) }
-            }
+                    if (generation == popularGeneration) {
+                        _uiState.update { it.copy(popularLoading = false) }
+                    }
+                }
         }
 
         /**
          * 清空热门数据并重新加载。
          */
         fun refreshPopular() {
-            popularNextPage = PopularVideoPage()
-            _uiState.update {
-                it.copy(popularItems = emptyList(), popularHasMore = true, popularError = false)
-            }
+            invalidatePopular()
             loadPopular()
         }
 
-        /**
-         * 加载更多动态视频。
-         *
-         * 需要登录，未登录时不执行。
-         * 超过 [LOAD_TIMEOUT_MS] 未返回时标记为加载失败。
-         */
-        fun loadDynamic() {
-            if (!_uiState.value.isLogin) return
-            viewModelScope.launch {
-                val current = _uiState.value
-                if (current.dynamicLoading || !current.dynamicHasMore) return@launch
-
-                _uiState.update { it.copy(dynamicLoading = true, dynamicError = false) }
-
-                val nextPage = dynamicCurrentPage + 1
-                runCatching {
-                    withTimeout(LOAD_TIMEOUT_MS) {
-                        val data =
-                            userRepository.getDynamicVideos(
-                                page = nextPage,
-                                offset = dynamicHistoryOffset.orEmpty(),
-                                updateBaseline = dynamicUpdateBaseline.orEmpty(),
-                                preferApiType = prefApiType(),
-                            )
-                        dynamicCurrentPage = nextPage
-                        dynamicHistoryOffset = data.historyOffset
-                        dynamicUpdateBaseline = data.updateBaseline
-                        _uiState.update {
-                            it.copy(
-                                dynamicItems = it.dynamicItems + data.videos,
-                                dynamicHasMore = data.hasMore,
-                            )
-                        }
-                    }
-                }.onFailure { error ->
-                    if (error is CancellationException && error !is TimeoutCancellationException) {
-                        throw error
-                    }
-                    logger.error(error) { "Failed to load dynamic videos" }
-                    _uiState.update { it.copy(dynamicError = true) }
-                }
-
-                _uiState.update { it.copy(dynamicLoading = false) }
-            }
-        }
-
-        /**
-         * 清空动态数据并重新加载。
-         */
-        fun refreshDynamic() {
-            dynamicCurrentPage = 0
-            dynamicHistoryOffset = null
-            dynamicUpdateBaseline = null
+        private fun invalidatePopular() {
+            popularGeneration++
+            popularJob?.cancel()
+            popularLoaded = false
+            popularNextPage = PopularVideoPage()
             _uiState.update {
-                it.copy(dynamicItems = emptyList(), dynamicHasMore = true, dynamicError = false)
+                it.copy(popularItems = emptyList(), popularLoading = false, popularHasMore = true, popularError = false)
             }
-            loadDynamic()
         }
 
         /**
-         * 刷新指定 Tab 的数据。
+         * 首次进入可见 Tab 时加载；成功空列表也会缓存，失败由显式刷新重试。
          *
-         * @param tab 目标 Tab。
+         * @param tab 当前可见的首页 Tab。
          */
-        fun refresh(tab: dev.frost819.newbv.data.datastore.HomeTopNavItem) {
+        fun ensureLoaded(tab: HomeTopNavItem) {
             when (tab) {
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.Recommend -> refreshRecommend()
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.Popular -> refreshPopular()
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.Dynamics -> refreshDynamic()
-                // 历史/稍后再看 Tab 由 PersonalViewModel 管理，见 HomeContent
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.History,
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.ToView,
-                -> Unit
+                HomeTopNavItem.Recommend, HomeTopNavItem.Dynamics ->
+                    if (!recommendLoaded && !_uiState.value.recommendError) loadRecommend()
+                HomeTopNavItem.Popular -> if (!popularLoaded && !_uiState.value.popularError) loadPopular()
+                HomeTopNavItem.History, HomeTopNavItem.ToView -> Unit
             }
         }
 
         /**
-         * 加载指定 Tab 的更多数据。
+         * 刷新当前可见 Tab；历史和稍后再看由 PersonalViewModel 管理。
          *
-         * @param tab 目标 Tab。
+         * @param tab 用户请求刷新的首页 Tab。
          */
-        fun loadMore(tab: dev.frost819.newbv.data.datastore.HomeTopNavItem) {
+        fun refresh(tab: HomeTopNavItem) {
             when (tab) {
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.Recommend -> loadRecommend()
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.Popular -> loadPopular()
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.Dynamics -> loadDynamic()
-                // 历史/稍后再看 Tab 由 PersonalViewModel 管理，见 HomeContent
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.History,
-                dev.frost819.newbv.data.datastore.HomeTopNavItem.ToView,
-                -> Unit
+                HomeTopNavItem.Recommend, HomeTopNavItem.Dynamics -> refreshRecommend()
+                HomeTopNavItem.Popular -> refreshPopular()
+                HomeTopNavItem.History, HomeTopNavItem.ToView -> Unit
             }
         }
 
         /**
-         * 更新登录状态（登录/登出时调用）。
+         * 加载当前 Tab 下一页，已加载完毕时跳过。
+         *
+         * @param tab 需要分页的首页 Tab。
          */
-        fun updateLoginState(isLogin: Boolean) {
-            _uiState.update { it.copy(isLogin = isLogin) }
-            if (isLogin) {
-                if (_uiState.value.dynamicItems.isEmpty()) loadDynamic()
-            } else {
-                dynamicCurrentPage = 0
-                dynamicHistoryOffset = null
-                dynamicUpdateBaseline = null
-                _uiState.update {
-                    it.copy(dynamicItems = emptyList(), dynamicHasMore = true, dynamicError = false, currentUid = 0L)
-                }
+        fun loadMore(tab: HomeTopNavItem) {
+            when (tab) {
+                HomeTopNavItem.Recommend, HomeTopNavItem.Dynamics -> loadRecommend()
+                HomeTopNavItem.Popular -> loadPopular()
+                HomeTopNavItem.History, HomeTopNavItem.ToView -> Unit
             }
-        }
-
-        /**
-         * 切换用户后刷新所有数据。
-         *
-         * 清空推荐/热门/动态列表并重新加载，确保展示新用户的个性化内容。
-         *
-         * @param uid 新用户 UID。
-         */
-        private fun onUserSwitched(uid: Long) {
-            _uiState.update { it.copy(currentUid = uid) }
-            refreshRecommend()
-            refreshPopular()
-            refreshDynamic()
         }
     }

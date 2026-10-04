@@ -20,10 +20,17 @@ import dev.frost819.newbv.biliapi.entity.video.VideoShot
 import dev.frost819.newbv.biliapi.grpc.utils.handleGrpcException
 import dev.frost819.newbv.biliapi.http.BiliHttpApi
 import dev.frost819.newbv.biliapi.http.entity.danmaku.DanmakuData
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import bilibili.pgc.gateway.player.v2.PlayURLGrpcKt as PgcPlayURLGrpcKt
 
 class VideoPlayRepository(
@@ -204,43 +211,114 @@ class VideoPlayRepository(
         }
     }
 
+    private val metadataMutex = Mutex()
+    private val metadataGeneration = AtomicLong()
+    private val metadataCache = AtomicReference<Pair<MetadataKey, PlaybackMetadata>?>(null)
+
+    // 仅驻留当前播放的两个字段；鉴权快照不参与日志或持久化。
+    private data class MetadataKey(
+        val generation: Long,
+        val aid: Long,
+        val cid: Long,
+        val apiType: ApiType,
+        val uid: Long?,
+        val session: String?,
+        val token: String?,
+    )
+
+    private data class PlaybackMetadata(
+        val subtitles: List<Subtitle>,
+        val maskUrl: String?,
+    )
+
+    private fun metadataKey(
+        aid: Long,
+        cid: Long,
+        apiType: ApiType,
+    ) = MetadataKey(
+        metadataGeneration.get(),
+        aid,
+        cid,
+        apiType,
+        authRepository.mid,
+        authRepository.sessionData,
+        authRepository.accessToken,
+    )
+
+    /** 清空当前播放的字幕／蒙版元数据，并使旧请求无法提交缓存。 */
+    fun clearPlaybackMetadata() {
+        metadataGeneration.incrementAndGet()
+        metadataCache.set(null)
+    }
+
+    private suspend fun getPlaybackMetadata(
+        aid: Long,
+        cid: Long,
+        apiType: ApiType,
+    ): PlaybackMetadata {
+        val key = metadataKey(aid, cid, apiType)
+        return metadataMutex.withLock {
+            if (key != metadataKey(aid, cid, apiType)) throw CancellationException("Playback changed")
+            metadataCache.get()?.takeIf { it.first == key }?.let { return@withLock it.second }
+            val result =
+                when (apiType) {
+                    ApiType.Web -> {
+                        val response = BiliHttpApi.getVideoMoreInfo(avid = aid, cid = cid).getResponseData()
+                        PlaybackMetadata(
+                            response.subtitle
+                                ?.subtitles
+                                ?.map { Subtitle.fromSubtitleItem(it) }
+                                .orEmpty(),
+                            response.dmMask?.maskUrl,
+                        )
+                    }
+                    ApiType.App -> {
+                        val reply =
+                            runCatching {
+                                danmakuStub?.dmView(
+                                    dmViewReq {
+                                        pid = aid
+                                        oid = cid
+                                        type = 1
+                                    },
+                                ) ?: throw IllegalStateException("Danmaku stub is not initialized")
+                            }.onFailure {
+                                if (it is CancellationException) {
+                                    throw it
+                                } else {
+                                    handleGrpcException(
+                                        it,
+                                    )
+                                }
+                            }.getOrThrow()
+                        PlaybackMetadata(
+                            reply.subtitle.subtitlesList
+                                ?.map { Subtitle.fromSubtitleItem(it) }
+                                .orEmpty(),
+                            reply.mask.maskUrl.takeIf { it.isNotBlank() },
+                        )
+                    }
+                }
+            currentCoroutineContext().ensureActive()
+            if (key != metadataKey(aid, cid, apiType)) throw CancellationException("Playback changed")
+            metadataCache.set(key to result)
+            result
+        }
+    }
+
+    /**
+     * 获取字幕列表，同次播放与蒙版 URL 共享一次元数据请求。
+     * @param aid 视频 AV 号。
+     * @param cid 视频分 P CID。
+     * @param preferApiType 明确选择 Web 或 App 接口。
+     * @return 可用字幕列表，没有字幕时为空。
+     * @throws IllegalStateException App gRPC 通道尚未就绪。
+     */
     suspend fun getSubtitle(
         aid: Long,
         cid: Long,
         preferApiType: ApiType,
-    ): List<Subtitle> =
-        when (preferApiType) {
-            ApiType.Web -> {
-                val response =
-                    BiliHttpApi
-                        .getVideoMoreInfo(
-                            avid = aid,
-                            cid = cid,
-                        ).getResponseData()
-                response.subtitle
-                    ?.subtitles
-                    ?.map { Subtitle.fromSubtitleItem(it) }
-                    ?: emptyList()
-            }
-
-            ApiType.App -> {
-                val dmViewReply =
-                    runCatching {
-                        danmakuStub?.dmView(
-                            dmViewReq {
-                                pid = aid
-                                oid = cid
-                                type = 1
-                            },
-                        )
-                    }.onFailure { handleGrpcException(it) }.getOrThrow()
-                dmViewReply
-                    ?.subtitle
-                    ?.subtitlesList
-                    ?.map { Subtitle.fromSubtitleItem(it) }
-                    ?: emptyList()
-            }
-        }
+    ): List<Subtitle> = getPlaybackMetadata(aid, cid, preferApiType).subtitles
 
     suspend fun sendHeartbeat(
         aid: Long,
@@ -338,37 +416,13 @@ class VideoPlayRepository(
                 }
         }
 
+    /** 下载当前视频的防遮挡蒙版；调用方仅在开关启用时调用。 */
     suspend fun getDanmakuMask(
         aid: Long,
         cid: Long,
         preferApiType: ApiType,
     ): DanmakuMask? {
-        val danmakuMaskUrl =
-            when (preferApiType) {
-                ApiType.Web -> {
-                    val response =
-                        BiliHttpApi
-                            .getVideoMoreInfo(
-                                avid = aid,
-                                cid = cid,
-                            ).getResponseData()
-                    response.dmMask?.maskUrl
-                }
-
-                ApiType.App -> {
-                    val dmViewReply =
-                        runCatching {
-                            danmakuStub?.dmView(
-                                dmViewReq {
-                                    pid = aid
-                                    oid = cid
-                                    type = 1
-                                },
-                            )
-                        }.onFailure { handleGrpcException(it) }.getOrThrow()
-                    dmViewReply?.mask?.maskUrl
-                }
-            } ?: return null
+        val danmakuMaskUrl = getPlaybackMetadata(aid, cid, preferApiType).maskUrl ?: return null
 
         val maskUrl =
             when (preferApiType) {

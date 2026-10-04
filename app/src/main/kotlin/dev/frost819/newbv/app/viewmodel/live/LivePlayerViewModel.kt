@@ -98,6 +98,7 @@ class LivePlayerViewModel
         private var wsJob: Job? = null
         private var debugInfoJob: Job? = null
         private var danmakuIdCounter = 0L
+        private var lastDanmakuTrimMs = 0L
 
         private val _debugInfo = MutableStateFlow("")
 
@@ -360,15 +361,35 @@ class LivePlayerViewModel
             }
         }
 
+        private fun activeDanmakuPosition(player: DanmakuPlayer): Long? {
+            // 实时消息不补播；隐藏或暂停时丢弃，避免恢复后同一时间戳的消息集中爆发。
+            if (!player.isRenderingEnabled ||
+                _uiState.value.playerState != LivePlayerState.Playing ||
+                _uiState.value.isBuffering
+            ) {
+                return null
+            }
+            val positionMs = player.getCurrentTimeMs()
+            if (positionMs - lastDanmakuTrimMs >= 10_000L || positionMs < lastDanmakuTrimMs) {
+                // 消息到达时顺便淘汰已过期的原始数据，不新增定时任务。
+                val lifetimeMs = player.getConfig()?.let { maxOf(it.durationMs, it.rollingDurationMs) } ?: 10_000L
+                player.retainData((positionMs - lifetimeMs - 1_000L).coerceAtLeast(0L), Long.MAX_VALUE)
+                lastDanmakuTrimMs = positionMs
+            }
+            return positionMs
+        }
+
         private fun sendDanmaku(
             content: String,
             mid: Long,
         ) {
+            val player = danmakuPlayer ?: return
+            val positionMs = activeDanmakuPosition(player) ?: return
             val danmakuId = danmakuIdCounter++
             val data =
                 DanmakuItemData(
                     danmakuId = danmakuId,
-                    position = danmakuPlayer?.getCurrentTimeMs() ?: 0,
+                    position = positionMs,
                     content = content,
                     mode = DanmakuItemData.DANMAKU_MODE_ROLLING,
                     textSize = 25,
@@ -379,7 +400,7 @@ class LivePlayerViewModel
                     userId = mid,
                     mergedType = DanmakuItemData.MERGED_TYPE_NORMAL,
                 )
-            danmakuPlayer?.send(data)
+            player.send(data)
         }
 
         /**

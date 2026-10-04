@@ -9,6 +9,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,17 +45,23 @@ import androidx.compose.material3.Scaffold as Material3Scaffold
  * @param navController 导航控制器（跳转详情页等）。
  * @param focusSaver 焦点恢复器（由 MainScreen 共享传入）。
  * @param viewModel 个人页 ViewModel。
+ * @param isActive 当前内容是否仍为主页面选中的导航项。
  */
 @Composable
 fun PersonalContent(
     navFocusRequester: FocusRequester,
     navController: NavController,
     focusSaver: FocusSaver,
+    isActive: Boolean = true,
     viewModel: PersonalViewModel = hiltViewModel(),
 ) {
     val firstTab = remember { Prefs.firstPersonalTopNavItem }
     var selectedTab by rememberSaveable { mutableStateOf(firstTab) }
     var focusOnContent by remember { mutableStateOf(false) }
+    val state by viewModel.uiState.collectAsState()
+    LaunchedEffect(selectedTab, state.currentUid, state.isLogin, isActive) {
+        if (isActive) viewModel.ensureLoaded(selectedTab)
+    }
 
     val reorderedItems =
         remember {

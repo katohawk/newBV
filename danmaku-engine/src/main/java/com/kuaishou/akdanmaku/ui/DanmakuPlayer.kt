@@ -95,6 +95,14 @@ class DanmakuPlayer(
     @Volatile
     private var started = false
 
+    @Volatile
+    private var renderingEnabled = true
+    private var frameCallbackScheduled = false
+
+    /** 是否允许弹幕渲染；关闭、后台或已释放时，直播消息可据此丢弃。 */
+    val isRenderingEnabled: Boolean
+        get() = renderingEnabled && !isReleased
+
     private val dataSystem: DataSystem?
         get() = engine.getSystem(DataSystem::class.java)
 
@@ -124,11 +132,14 @@ class DanmakuPlayer(
      * 运行在[actionHandler] [actionThread] 线程中
      */
     private fun postFrameCallback() {
+        if (!started || isReleased || !renderingEnabled) return
+        if (frameCallbackScheduled || danmakuView?.get() == null) return
+        frameCallbackScheduled = true
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
     private fun updateFrame(deltaTimeSeconds: Float? = null) {
-        if (!started || isReleased) {
+        if (!started || isReleased || !renderingEnabled) {
             return
         }
 
@@ -138,12 +149,12 @@ class DanmakuPlayer(
         } else {
             // Prepare next frameCallback.
             postFrameCallback()
+            // 不阻塞 HandlerThread；解绑视图后没有 onDraw，控制/释放消息仍必须可执行。
+            if (!drawSemaphore.tryAcquire()) return
             // update entities before system update
             engine.preAct()
-            // Wait for acquiring a permit.
-            drawSemaphore.acquire()
         }
-        if (!started || isReleased) {
+        if (!started || isReleased || !renderingEnabled) {
             return
         }
         startTrace("updateFrame")
@@ -165,7 +176,7 @@ class DanmakuPlayer(
             engine.step()
         }
         drawSemaphore.tryAcquire()
-        if (!started) {
+        if (!started || !renderingEnabled) {
             releaseSemaphore()
             return
         }
@@ -176,8 +187,10 @@ class DanmakuPlayer(
 
     private fun releaseSemaphore() {
         // Acquired or on the first draw(with init permit: 0).
-        if (drawSemaphore.availablePermits() == 0) {
-            drawSemaphore.release()
+        synchronized(drawSemaphore) {
+            if (drawSemaphore.availablePermits() == 0) {
+                drawSemaphore.release()
+            }
         }
     }
 
@@ -195,12 +208,50 @@ class DanmakuPlayer(
      * 绑定后弹幕的绘制将在此 View 上进行
      */
     fun bindView(danmakuView: DanmakuView) {
+        if (isReleased || this.danmakuView?.get() === danmakuView) return
         this.danmakuView?.get()?.danmakuPlayer = null
         this.danmakuView = WeakReference(danmakuView)
         danmakuView.danmakuPlayer = this
         engine.context.displayer = danmakuView.displayer
         notifyDisplayerSizeChanged(danmakuView.displayer.width, danmakuView.displayer.height)
         danmakuView.postInvalidate()
+        actionHandler.post { postFrameCallback() }
+    }
+
+    /**
+     * 解绑指定视图并停止帧调度；不会误解绑随后绑定的新视图。
+     * @param view 要解绑的视图。
+     */
+    fun unbindView(view: DanmakuView) {
+        if (danmakuView?.get() !== view) return
+        view.danmakuPlayer = null
+        danmakuView = null
+        actionHandler.post { cancelFrameCallback() }
+    }
+
+    /**
+     * 控制帧调度，用于弹幕关闭和页面不可见。
+     *
+     * 与计时器暂停分开；恢复播放位置及播放状态由调用方同步。
+     * @param enabled 是否允许计算和绘制弹幕帧。
+     */
+    fun setRenderingEnabled(enabled: Boolean) {
+        if (isReleased || renderingEnabled == enabled) return
+        renderingEnabled = enabled
+        releaseSemaphore()
+        actionHandler.post {
+            cancelFrameCallback()
+            if (renderingEnabled) {
+                danmakuView?.get()?.postInvalidate()
+                postFrameCallback()
+            }
+        }
+    }
+
+    private fun cancelFrameCallback() {
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+        frameCallbackScheduled = false
+        actionHandler.removeMessages(MSG_FRAME_UPDATE)
     }
 
     /**
@@ -209,6 +260,7 @@ class DanmakuPlayer(
      * @param danmakuConfig 弹幕配置
      */
     fun start(danmakuConfig: DanmakuConfig? = null) {
+        if (isReleased) return
         danmakuConfig?.let {
             updateConfig(it)
         }
@@ -222,6 +274,7 @@ class DanmakuPlayer(
     }
 
     fun pause() {
+        if (isReleased) return
         engine.pause()
     }
 
@@ -233,21 +286,28 @@ class DanmakuPlayer(
     /**
      * 释放弹幕播放器，释放后弹幕播放器将不再可用。
      */
+    @Synchronized
     fun release() {
         if (isReleased) {
             return
         }
-        danmakuView = null
         isReleased = true
-        actionHandler.removeCallbacksAndMessages(null)
-//    Choreographer.getInstance().removeFrameCallback(frameCallback)
         started = false
-        actionThread.quitSafely()
-        actionThread.join(50L)
-        engine.release()
+        renderingEnabled = false
+        danmakuView?.get()?.danmakuPlayer = null
+        danmakuView = null
+        releaseSemaphore()
+        actionHandler.removeCallbacksAndMessages(null)
+        // 在计算线程完成 ECS 清理，避免与正在执行的 updateFrame 竞争；主线程不等待退出。
+        actionHandler.post {
+            cancelFrameCallback()
+            engine.release()
+            actionThread.quitSafely()
+        }
     }
 
     fun seekTo(positionMs: Long) {
+        if (isReleased) return
         Log.d(DanmakuEngine.TAG, "[Player] SeekTo($positionMs)")
         getConfig()?.updateFirstShown()
         engine.seekTo(max(positionMs, 0L))
@@ -256,10 +316,12 @@ class DanmakuPlayer(
     fun getCurrentTimeMs(): Long = engine.getCurrentTimeMs()
 
     fun updatePlaySpeed(speed: Float) {
+        if (isReleased) return
         engine.updateTimerFactor(speed)
     }
 
     fun updateData(dataList: List<DanmakuItemData>): List<DanmakuItem> {
+        if (isReleased) return emptyList()
         val items = dataList.map { obtainItem(it) }
         dataSystem?.addItems(items)
         return items
@@ -272,7 +334,26 @@ class DanmakuPlayer(
      * 整体替换，传入空列表不会清空数据，必须调用本方法。
      */
     fun clearData() {
+        if (isReleased) return
         dataSystem?.clearData()
+        actionHandler.post { dataSystem?.applyPendingChanges() }
+    }
+
+    /**
+     * 保留指定时间窗口内的原始弹幕及活动实体，裁剪在计算线程执行。
+     *
+     * @param startInclusiveMs 窗口起点（毫秒，含）。
+     * @param endExclusiveMs 窗口终点（毫秒，不含），必须大于起点。
+     * @throws IllegalArgumentException 窗口终点不大于起点时抛出。
+     */
+    fun retainData(
+        startInclusiveMs: Long,
+        endExclusiveMs: Long,
+    ) {
+        require(endExclusiveMs > startInclusiveMs) { "Retention window must not be empty" }
+        if (isReleased) return
+        dataSystem?.retainData(startInclusiveMs, endExclusiveMs)
+        actionHandler.post { dataSystem?.applyPendingChanges() }
     }
 
     /**
@@ -316,7 +397,11 @@ class DanmakuPlayer(
         }
     }
 
-    fun getConfig(): DanmakuConfig? = engine.getConfig()
+    /**
+     * 返回稳定的最新配置，计算线程消费待应用配置后仍可读取。
+     * @return 最近传入的配置；尚未设置时返回引擎默认配置。
+     */
+    fun getConfig(): DanmakuConfig? = config ?: engine.context.config
 
     fun getDanmakusAtPoint(point: Point): List<DanmakuItem>? =
         engine.getSystem(RenderSystem::class.java)?.getDanmakus(point)
@@ -421,13 +506,15 @@ class DanmakuPlayer(
         }
     }
 
-    private class FrameCallback(
+    private inner class FrameCallback(
         handler: Handler,
     ) : Choreographer.FrameCallback {
         private val handlerWeakReference = WeakReference(handler)
 
         override fun doFrame(frameTimeNanos: Long) {
+            frameCallbackScheduled = false
             val handler = handlerWeakReference.get() ?: return
+            if (isReleased || !started || !renderingEnabled || danmakuView?.get() == null) return
             handler.removeMessages(MSG_FRAME_UPDATE)
             handler.sendEmptyMessage(MSG_FRAME_UPDATE)
         }

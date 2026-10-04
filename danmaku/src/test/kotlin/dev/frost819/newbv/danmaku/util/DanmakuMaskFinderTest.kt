@@ -5,6 +5,12 @@ import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMask
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMaskType
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMobMaskFrame
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuWebMaskFrame
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import java.io.File
@@ -73,6 +79,41 @@ class DanmakuMaskFinderTest {
 
             assertThat(frame).isNotNull()
             assertThat(frame).isInstanceOf(DanmakuMobMaskFrame::class.java)
+        }
+
+    @Test
+    fun `different videos sharing a time range never reuse another mask segment`() =
+        runTest {
+            // Given
+            val finder = DanmakuMaskFinder()
+            assertThat(finder.findFrame(loadWebMask(), 0L)).isInstanceOf(DanmakuWebMaskFrame::class.java)
+
+            // When
+            val frame = finder.findFrame(loadMobMask(), 0L)
+
+            // Then
+            assertThat(frame).isInstanceOf(DanmakuMobMaskFrame::class.java)
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `reset during background decode prevents stale cache publication`() =
+        runTest {
+            // Given: 解压已排队，但尚未执行。
+            val finder = DanmakuMaskFinder()
+            finder.decodeDispatcher = StandardTestDispatcher(testScheduler)
+            val pending =
+                async(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                    finder.findFrame(loadWebMask(), 0L)
+                }
+
+            // When
+            finder.reset()
+            advanceUntilIdle()
+
+            // Then
+            assertThat(pending.await()).isNull()
+            assertThat(finder.findFrame(loadMobMask(), 0L)).isInstanceOf(DanmakuMobMaskFrame::class.java)
         }
 
     @Test

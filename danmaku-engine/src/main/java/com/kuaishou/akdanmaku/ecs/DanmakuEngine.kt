@@ -176,9 +176,16 @@ class DanmakuEngine(
 
     internal fun release() {
         timer.paused = true
-        systems.forEach { system ->
+        getSystem(DataSystem::class.java)?.let {
+            it.clearData()
+            it.applyPendingChanges()
+        }
+        removeAllEntities()
+        // removeSystem 会改变 systems，先复制，确保每个系统都完成释放。
+        systems.toList().forEach { system ->
             removeSystem(system)
         }
+        context.cacheManager.requestRelease()
     }
 
     internal fun seekTo(positionMs: Long) {

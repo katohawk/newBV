@@ -3,7 +3,10 @@ package dev.frost819.newbv.danmaku.util
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMask
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMaskFrame
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMaskSegment
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -15,19 +18,26 @@ import kotlinx.coroutines.withContext
  * **使用注意**：
  * - 切集或开关切换时调用 [reset] 清除缓存
  * - [findFrame] 是挂起函数，内部解压操作在 [Dispatchers.Default] 执行
+ * - [findFrame] 和 [reset] 在同一个调用线程操作，UI 从主线程调用；后台只负责解压
  *
  * @see DanmakuMask
  * @see DanmakuMaskFrame
  */
 class DanmakuMaskFinder {
-    @Volatile
     private var cachedSegment: DanmakuMaskSegment? = null
+    private var cachedMask: DanmakuMask? = null
+    private var cacheGeneration = 0
+
+    /** 解压调度器，单元测试替换为可控调度器。 */
+    internal var decodeDispatcher: CoroutineDispatcher = Dispatchers.Default
 
     /**
      * 清除缓存的 segment。
      * 在切集、开关切换等导致蒙版数据变化时调用。
      */
     fun reset() {
+        cacheGeneration++
+        cachedMask = null
         cachedSegment = null
     }
 
@@ -37,18 +47,28 @@ class DanmakuMaskFinder {
      * @param mask         [DanmakuMask] 蒙版对象（从 [dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMask] 获取）
      * @param currentTime  当前播放时间（毫秒）
      * @return 当前应渲染的 [DanmakuMaskFrame]，无则返回 null
+     * @throws kotlinx.coroutines.CancellationException 调用方取消查找时抛出。
      */
     suspend fun findFrame(
         mask: DanmakuMask,
         currentTime: Long,
     ): DanmakuMaskFrame? {
-        val cached = cachedSegment
-        if (cached == null || currentTime !in cached.range) {
-            withContext(Dispatchers.Default) {
-                cachedSegment = mask.getSegmentAt(currentTime)
-            }
+        currentCoroutineContext().ensureActive()
+        if (cachedMask !== mask) {
+            reset()
+            cachedMask = mask
         }
-        return cachedSegment?.frames?.lastOrNull { currentTime in it.range }
+        val cached = cachedSegment
+        if (cached != null && currentTime in cached.range) {
+            return cached.frames.lastOrNull { currentTime in it.range }
+        }
+        val generation = ++cacheGeneration
+        val segment = withContext(decodeDispatcher) { mask.getSegmentAt(currentTime) }
+        // reset/切换视频发生在调用线程；过时的后台解压不得回写单段缓存。
+        currentCoroutineContext().ensureActive()
+        if (generation != cacheGeneration || cachedMask !== mask) return null
+        cachedSegment = segment
+        return segment?.frames?.lastOrNull { currentTime in it.range }
     }
 }
 

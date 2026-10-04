@@ -8,10 +8,17 @@ import dev.frost819.newbv.biliapi.repositories.VideoDetailRepository
 import dev.frost819.newbv.core.log.Loggers
 import dev.frost819.newbv.data.datastore.Prefs
 import dev.frost819.newbv.data.repository.PlaybackProgressRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -25,6 +32,9 @@ import javax.inject.Singleton
  * @property liked 是否已点赞。
  * @property coined 是否已投币。
  * @property favorited 是否已收藏。
+ * @property userActionsLoaded 操作状态是否已确认，false 时禁止执行反向操作。
+ * @property userActionsLoading 是否正在加载操作状态。
+ * @property userActionsError 最近一次加载是否失败，可显式重试。
  * @property lastPlayedCid 最近播放的 CID。
  * @property lastPlayedTime 最近播放位置（秒），-1 表示已看完。
  */
@@ -33,6 +43,12 @@ data class VideoSharedState(
     val liked: Boolean = false,
     val coined: Boolean = false,
     val favorited: Boolean = false,
+    /** 点赞、投币、收藏状态已确认；false 时不得把默认值当作真实状态执行操作。 */
+    val userActionsLoaded: Boolean = false,
+    /** 当前正在后台读取操作状态。 */
+    val userActionsLoading: Boolean = false,
+    /** 操作状态读取失败，界面可以提供重试。 */
+    val userActionsError: Boolean = false,
     val lastPlayedCid: Long = 0L,
     val lastPlayedTime: Int = 0,
 )
@@ -96,6 +112,21 @@ class VideoInfoRepository
         private var detailGeneration = 0L
         private var historyOwner: Pair<Long, Long>? = null
 
+        // 同 UID 的重新登录也必须使动作状态失效，凭证仅用于私有比较，不打印。
+        private data class AccountKey(
+            val uid: Long,
+            val session: String,
+            val token: String,
+        )
+
+        private fun accountKey() = AccountKey(Prefs.uid, Prefs.sessData, Prefs.accessToken)
+
+        private var actionOwner: Pair<AccountKey, Long>? = null
+        private val interactionRevision = AtomicLong()
+        private val actionQueryGeneration = AtomicLong()
+        private val listGeneration = AtomicLong()
+        private val pagesMutex = Mutex()
+
         private val _videoList = MutableStateFlow<List<VideoListItem>>(emptyList())
         val videoList = _videoList.asStateFlow()
 
@@ -121,17 +152,42 @@ class VideoInfoRepository
          * 供详情页 ViewModel 在加载完成后调用，确保播放器页面能获取相关视频数据。
          *
          * @param detail 视频详情
+         * @param userActionsLoaded 详情是否包含已经确认的操作状态；播放器 Web 起播可暂时省略。
          */
-        fun updateVideoDetail(detail: VideoDetail) {
+        fun updateVideoDetail(
+            detail: VideoDetail,
+            userActionsLoaded: Boolean = true,
+        ) {
             _videoDetail.update { detail }
             _relatedVideos.update { detail.relatedVideos }
+            if (detail.pages.isNotEmpty()) {
+                _videoList.update { list ->
+                    list.map { item ->
+                        if (item.aid == detail.aid && (item.epid ?: 0) == 0 && (item.seasonId ?: 0) == 0) {
+                            item.copy(ugcPages = detail.pages.takeIf { it.size > 1 }.orEmpty())
+                        } else {
+                            item
+                        }
+                    }
+                }
+            }
+            val knownActions =
+                _videoSharedState.value?.takeIf {
+                    it.aid == detail.aid && actionOwner == (accountKey() to detail.aid) && it.userActionsLoaded
+                }
+            if (userActionsLoaded) {
+                actionOwner = accountKey() to detail.aid
+                interactionRevision.incrementAndGet()
+            }
             _videoSharedState.update { old ->
                 val local = old?.takeIf { it.aid == detail.aid && historyOwner == (Prefs.uid to detail.aid) }
                 VideoSharedState(
                     aid = detail.aid,
-                    liked = detail.userActions.like,
-                    coined = detail.userActions.coin,
-                    favorited = detail.userActions.favorite,
+                    liked = if (userActionsLoaded) detail.userActions.like else knownActions?.liked ?: false,
+                    coined = if (userActionsLoaded) detail.userActions.coin else knownActions?.coined ?: false,
+                    favorited =
+                        if (userActionsLoaded) detail.userActions.favorite else knownActions?.favorited ?: false,
+                    userActionsLoaded = userActionsLoaded || knownActions != null,
                     lastPlayedCid = local?.lastPlayedCid ?: detail.history.lastPlayedCid,
                     lastPlayedTime = local?.lastPlayedTime ?: detail.history.progress,
                 )
@@ -143,19 +199,28 @@ class VideoInfoRepository
          *
          * @param aid 视频 AV 号
          * @param preferApiType 接口类型
+         * @param includeUserActions 是否等待 Web 操作状态，默认保持详情页行为。
          */
         suspend fun loadVideoDetail(
             aid: Long,
             preferApiType: ApiType,
             bvid: String = "",
+            includeUserActions: Boolean = true,
         ) {
+            val account = accountKey()
             val generation = ++detailGeneration
             runCatching {
-                val detail = videoDetailRepository.getVideoDetail(aid = aid, preferApiType = preferApiType, bvid = bvid)
-                val local = playbackProgressRepository.get(Prefs.uid, aid)
+                val detail =
+                    videoDetailRepository.getVideoDetail(
+                        aid = aid,
+                        preferApiType = preferApiType,
+                        bvid = bvid,
+                        includeUserActions = includeUserActions,
+                    )
+                val local = playbackProgressRepository.get(account.uid, aid)
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (generation != detailGeneration) return
-                updateVideoDetail(detail)
+                if (generation != detailGeneration || accountKey() != account) return
+                updateVideoDetail(detail, includeUserActions || preferApiType == ApiType.App)
                 if (local != null) updateHistory(local.position, local.cid)
                 logger.info { "Loaded video detail: aid=$aid, related=${detail.relatedVideos.size}" }
             }.onFailure { e ->
@@ -203,27 +268,171 @@ class VideoInfoRepository
          * @param items 新的视频列表
          */
         fun updateVideoList(items: List<VideoListItem>) {
-            _videoList.update { items }
+            listGeneration.incrementAndGet()
+            val detail = _videoDetail.value
+            _videoList.value =
+                items.map { item ->
+                    if ((item.epid ?: 0) > 0 || (item.seasonId ?: 0) > 0) return@map item.copy(ugcPages = null)
+                    if (detail != null &&
+                        item.aid == detail.aid &&
+                        detail.pages.isNotEmpty()
+                    ) {
+                        item.copy(ugcPages = detail.pages.takeIf { it.size > 1 }.orEmpty())
+                    } else {
+                        item
+                    }
+                }
         }
 
         /**
-         * 为列表中的每个视频加载 UGC 分 P 信息。
-         *
-         * 仅对普通视频生效；番剧以完整的 aid/cid/epid 分集标识播放。
-         *
-         * @param preferApiType 接口类型
+         * 确保指定视频的分 P 已确定；单 P 用空列表标记，失败仍为 null，允许重试。
+         * 请求在原子状态更新之外执行；列表已被替换时丢弃返回结果。
+         * @return 已加载或 PGC 返回 true；未知、失败或列表已替换返回 false。
          */
-        suspend fun updateUgcPages(preferApiType: ApiType) {
-            _videoList.update { oldList ->
-                oldList.map { item ->
-                    // 部分番剧的 UGC 接口返回整季 CID，套在单个 EP 下会导致选集时 AV/EP 与 CID 错配。
-                    if ((item.epid ?: 0) > 0 || (item.seasonId ?: 0) > 0) {
-                        return@map item.copy(ugcPages = null)
+        suspend fun ensureUgcPages(
+            aid: Long,
+            preferApiType: ApiType,
+        ): Boolean {
+            val generation = listGeneration.get()
+            return pagesMutex.withLock {
+                if (generation != listGeneration.get()) return@withLock false
+                val item = _videoList.value.firstOrNull { it.aid == aid } ?: return@withLock false
+                if ((item.epid ?: 0) > 0 || (item.seasonId ?: 0) > 0) return@withLock true
+                if (item.ugcPages != null) return@withLock true
+                val pages =
+                    try {
+                        withTimeout(10_000L) { videoDetailRepository.getUgcPages(aid, preferApiType) }
+                    } catch (_: TimeoutCancellationException) {
+                        return@withLock false
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        return@withLock false
                     }
-                    runCatching {
-                        val pages = videoDetailRepository.getUgcPages(aid = item.aid, preferApiType = preferApiType)
-                        if (pages.size > 1) item.copy(ugcPages = pages) else item
-                    }.getOrElse { item }
+                currentCoroutineContext().ensureActive()
+                if (pages.isEmpty() || generation != listGeneration.get()) return@withLock false
+                _videoList.update { list ->
+                    if (generation != listGeneration.get()) {
+                        list
+                    } else {
+                        list.map {
+                            if (it.aid == aid) it.copy(ugcPages = pages.takeIf { it.size > 1 }.orEmpty()) else it
+                        }
+                    }
+                }
+                generation == listGeneration.get()
+            }
+        }
+
+        /** 当前视频和相邻视频补分 P；省略 currentAid 保持旧调用的批量兼容。 */
+        suspend fun updateUgcPages(
+            preferApiType: ApiType,
+            currentAid: Long? = null,
+        ) {
+            val list = _videoList.value
+            val currentIndex = list.indexOfFirst { it.aid == currentAid }
+            val targets =
+                if (currentAid == null) {
+                    list
+                } else if (currentIndex < 0) {
+                    emptyList()
+                } else {
+                    listOfNotNull(
+                        list.getOrNull(currentIndex),
+                        list.getOrNull(currentIndex - 1),
+                        list.getOrNull(
+                            currentIndex + 1,
+                        ),
+                    )
+                }
+            targets.map { it.aid }.distinct().forEach { ensureUgcPages(it, preferApiType) }
+        }
+
+        /** 当前视频更换时立即撤销旧动作请求；同账号同视频的已知状态可沿用。 */
+        fun prepareVideoActions(aid: Long) {
+            actionQueryGeneration.incrementAndGet()
+            _videoSharedState.update { old ->
+                if (old != null && old.aid == aid && actionOwner == (accountKey() to aid)) {
+                    old.copy(userActionsLoading = false)
+                } else {
+                    VideoSharedState(aid = aid)
+                }
+            }
+        }
+
+        /** 当前账号和视频的操作状态已确认，防止账号切换时误用旧状态。 */
+        fun isVideoActionsReady(aid: Long): Boolean =
+            actionOwner == (accountKey() to aid) &&
+                _videoSharedState.value?.let { it.aid == aid && it.userActionsLoaded } == true
+
+        /** 标记一次用户交互，阻止此前发出的状态查询覆盖新的用户操作。 */
+        fun beginVideoInteraction(aid: Long) {
+            if (_videoSharedState.value?.aid == aid) interactionRevision.incrementAndGet()
+        }
+
+        /** 加载当前账号的动作状态；失败保留已知值并暴露重试状态，取消不作为失败。 */
+        suspend fun refreshVideoActions(
+            aid: Long,
+            preferApiType: ApiType,
+        ) {
+            val account = accountKey()
+            val generation = actionQueryGeneration.incrementAndGet()
+            val revision = interactionRevision.get()
+            _videoSharedState.update { old ->
+                old?.takeIf { it.aid == aid }?.copy(userActionsLoading = true, userActionsError = false) ?: old
+            }
+
+            fun markFailure() {
+                _videoSharedState.update { old ->
+                    val isCurrentQuery =
+                        accountKey() == account &&
+                            generation == actionQueryGeneration.get() &&
+                            revision == interactionRevision.get()
+                    if (isCurrentQuery && old != null && old.aid == aid) {
+                        old.copy(userActionsLoading = false, userActionsError = true)
+                    } else {
+                        old
+                    }
+                }
+            }
+            try {
+                val actions = withTimeout(10_000L) { videoDetailRepository.getVideoUserActions(aid, preferApiType) }
+                currentCoroutineContext().ensureActive()
+                _videoSharedState.update { old ->
+                    val isCurrentQuery =
+                        accountKey() == account &&
+                            generation == actionQueryGeneration.get() &&
+                            revision == interactionRevision.get()
+                    if (isCurrentQuery && old != null && old.aid == aid) {
+                        actionOwner = account to aid
+                        old.copy(
+                            liked = actions.like,
+                            coined = actions.coin,
+                            favorited = actions.favorite,
+                            userActionsLoaded = true,
+                            userActionsLoading = false,
+                            userActionsError = false,
+                        )
+                    } else {
+                        old
+                    }
+                }
+            } catch (_: TimeoutCancellationException) {
+                markFailure()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                markFailure()
+            } finally {
+                _videoSharedState.update { old ->
+                    if (generation == actionQueryGeneration.get() &&
+                        old != null &&
+                        old.aid == aid
+                    ) {
+                        old.copy(userActionsLoading = false)
+                    } else {
+                        old
+                    }
                 }
             }
         }
@@ -262,6 +471,8 @@ class VideoInfoRepository
             coined: Boolean? = null,
             favorited: Boolean? = null,
         ) {
+            interactionRevision.incrementAndGet()
+            actionOwner = accountKey() to aid
             _videoSharedState.update { old ->
                 val current = old?.takeIf { it.aid == aid }
                 VideoSharedState(
@@ -269,6 +480,9 @@ class VideoInfoRepository
                     liked = liked ?: current?.liked ?: false,
                     coined = coined ?: current?.coined ?: false,
                     favorited = favorited ?: current?.favorited ?: false,
+                    userActionsLoaded =
+                        current?.userActionsLoaded == true || (liked != null && coined != null && favorited != null),
+                    userActionsLoading = false,
                     lastPlayedCid = current?.lastPlayedCid ?: 0L,
                     lastPlayedTime = current?.lastPlayedTime ?: 0,
                 )
@@ -328,6 +542,10 @@ class VideoInfoRepository
         /** 重置所有状态。 */
         fun reset() {
             detailGeneration++
+            actionQueryGeneration.incrementAndGet()
+            interactionRevision.incrementAndGet()
+            listGeneration.incrementAndGet()
+            actionOwner = null
             historyOwner = null
             _videoList.update { emptyList() }
             _videoDetail.update { null }

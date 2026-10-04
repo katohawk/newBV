@@ -32,11 +32,24 @@ import dev.frost819.newbv.app.ui.component.HomeTabItem
 import dev.frost819.newbv.app.ui.component.TopNav
 import dev.frost819.newbv.app.viewmodel.home.HomeViewModel
 import dev.frost819.newbv.app.viewmodel.personal.PersonalViewModel
+import dev.frost819.newbv.biliapi.entity.user.ToViewItem
 import dev.frost819.newbv.data.datastore.HomeTopNavItem
 import dev.frost819.newbv.data.datastore.PersonalTopNavItem
 import dev.frost819.newbv.data.datastore.Prefs
 import kotlinx.coroutines.delay
 import androidx.compose.material3.Scaffold as Material3Scaffold
+
+/**
+ * 按实际稍后再看分组选择首张卡片；空列表不请求卡片焦点。
+ *
+ * @param items 当前账户已加载的稍后再看列表。
+ */
+internal fun firstToViewItemKey(items: List<ToViewItem>): String? =
+    when {
+        items.any { it.progress != -1 } -> "toview_unwatched_0"
+        items.isNotEmpty() -> "toview_watched_0"
+        else -> null
+    }
 
 /**
  * 首页内容（TopNav + 4 个子 Tab）。
@@ -48,12 +61,14 @@ import androidx.compose.material3.Scaffold as Material3Scaffold
  * @param navFocusRequester 顶部 Tab 的焦点请求器（由 MainScreen 传入）。
  * @param navController 导航控制器（跳转详情页等）。
  * @param focusSaver 焦点恢复器（由 MainScreen 共享传入）。
+ * @param isActive 当前内容是否仍为主页面选中的导航项。
  */
 @Composable
 fun HomeContent(
     navFocusRequester: FocusRequester,
     navController: NavController,
     focusSaver: FocusSaver,
+    isActive: Boolean = true,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val homeTabs =
@@ -79,23 +94,38 @@ fun HomeContent(
     val uiState by viewModel.uiState.collectAsState()
     // 与个人页共享同一 ViewModel 实例（同一导航目的地作用域），数据只加载一次
     val personalViewModel: PersonalViewModel = hiltViewModel()
+    val personalState by personalViewModel.uiState.collectAsState()
+    val accountKey =
+        when (selectedTab) {
+            HomeTopNavItem.History, HomeTopNavItem.ToView -> personalState.currentUid to personalState.isLogin
+            else -> uiState.currentUid to uiState.isLogin
+        }
+    LaunchedEffect(selectedTab, accountKey, isActive) {
+        if (isActive) {
+            when (selectedTab) {
+                HomeTopNavItem.History -> personalViewModel.ensureLoaded(PersonalTopNavItem.History)
+                HomeTopNavItem.ToView -> personalViewModel.ensureLoaded(PersonalTopNavItem.ToView)
+                else -> viewModel.ensureLoaded(selectedTab)
+            }
+        }
+    }
 
     val tabItems = remember { homeTabs.map { HomeTabItem(it) } }
 
     // 首个 Tab 的第一个卡片对应的焦点 key（各子页面的 focusSaverItem 命名不同）
     val firstTabInitialFocusKey =
         when (firstTab) {
-            HomeTopNavItem.Recommend, HomeTopNavItem.Dynamics -> "rcmd_0"
+            HomeTopNavItem.Recommend, HomeTopNavItem.Dynamics -> firstRecommendItemKey(uiState)
             HomeTopNavItem.Popular -> "popular_0"
             HomeTopNavItem.History -> "history_0"
-            HomeTopNavItem.ToView -> "toview_unwatched_0"
+            HomeTopNavItem.ToView -> firstToViewItemKey(personalViewModel.toViewItems)
         }
 
     // 冷启动：MainScreen 会先聚焦 TopNav；等首屏数据加载出第一张卡片后，
     // 把焦点移到第一个视频上。若用户已把焦点移入内容区/左侧栏，或手动切换了
     // Tab，则放弃本次自动落焦，不与用户操作抢占焦点。
-    if (pendingInitialFocus) {
-        LaunchedEffect(firstTab) {
+    if (pendingInitialFocus && isActive) {
+        LaunchedEffect(firstTab, firstTabInitialFocusKey) {
             // 等 TopNav 至少获得过一次焦点再判断"用户移走了焦点"，
             // 避免冷启动时 MainScreen 尚未聚焦 TopNav 导致的竞态误判
             var navFocusSeen = false
@@ -109,10 +139,11 @@ fun HomeContent(
                     continue
                 }
                 if (!navHasFocus) break
+                val key = firstTabInitialFocusKey ?: continue
                 val focused =
                     runCatching {
-                        focusSaver.focusRequesterFor(firstTabInitialFocusKey).requestFocus()
-                    }.isSuccess
+                        focusSaver.focusRequesterFor(key).requestFocus()
+                    }.getOrDefault(false)
                 if (focused) break
             }
             pendingInitialFocus = false
@@ -189,6 +220,7 @@ fun HomeContent(
                             viewModel = viewModel,
                             navController = navController,
                             focusSaver = focusSaver,
+                            onFocusTopNav = { navFocusRequester.requestFocus() },
                         )
                     HomeTopNavItem.Popular ->
                         PopularScreen(

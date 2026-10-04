@@ -3,6 +3,7 @@ package dev.frost819.newbv.app.viewmodel.player
 import com.google.common.truth.Truth.assertThat
 import com.kuaishou.akdanmaku.ui.DanmakuPlayer
 import dev.frost819.newbv.app.ui.action.player.DanmakuSettingAction
+import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMask
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMeta
 import dev.frost819.newbv.biliapi.http.entity.danmaku.DanmakuData
 import dev.frost819.newbv.biliapi.repositories.VideoPlayRepository
@@ -16,12 +17,16 @@ import io.mockk.mockkObject
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -72,6 +77,8 @@ class DanmakuViewModelTest {
 
         videoPlayRepository = mockk()
         viewModel = DanmakuViewModel(videoPlayRepository)
+        viewModel.conversionDispatcher = testDispatcher
+        viewModel.maskFetchDispatcher = testDispatcher
     }
 
     @AfterEach
@@ -451,6 +458,186 @@ class DanmakuViewModelTest {
         }
 
     // === 引擎时钟对齐 ===
+
+    @Test
+    fun `evicted distant segments are downloaded again within a bounded window`() =
+        runTest(testDispatcher) {
+            // Given
+            val player = mockk<DanmakuPlayer>(relaxed = true)
+            viewModel.danmakuPlayer = player
+            coEvery { videoPlayRepository.getDanmakuMeta(any(), any()) } returns DanmakuMeta(360_000, 10, false, 100)
+            coEvery { videoPlayRepository.getDanmakuSegment(any(), any(), any(), any()) } returns emptyList()
+
+            // When
+            viewModel.loadDanmaku(1, 2, 720_000)
+            advanceUntilIdle()
+            viewModel.onVideoPositionChanged(2_520_000)
+            advanceUntilIdle()
+            viewModel.onVideoPositionChanged(720_000)
+            advanceUntilIdle()
+
+            // Then
+            coVerify(exactly = 2) {
+                videoPlayRepository.getDanmakuSegment(1, 2, 3, any())
+            }
+            coVerify(exactly = 2) {
+                videoPlayRepository.getDanmakuSegment(1, 2, 2, any())
+            }
+            verify { player.retainData(360_000, 1_440_000) }
+            verify { player.retainData(2_160_000, 3_240_000) }
+            viewModel.release()
+        }
+
+    @Test
+    fun `short segments retain enough preceding data for rolling lifetime`() =
+        runTest(testDispatcher) {
+            // Given
+            val player = mockk<DanmakuPlayer>(relaxed = true)
+            viewModel.danmakuPlayer = player
+            coEvery { videoPlayRepository.getDanmakuMeta(any(), any()) } returns DanmakuMeta(2_000, 20, false, 100)
+            coEvery { videoPlayRepository.getDanmakuSegment(any(), any(), any(), any()) } returns emptyList()
+
+            // When
+            viewModel.loadDanmaku(1, 2, 18_000)
+            advanceUntilIdle()
+
+            // Then: 9 秒滚动寿命跨越 5 个历史分段，不能把服务端 pageSize 改成六分钟。
+            verify { player.retainData(8_000, 22_000) }
+            coVerify { videoPlayRepository.getDanmakuSegment(1, 2, 5, any()) }
+            viewModel.release()
+        }
+
+    @Test
+    fun `rendering disabled skips segment fetching and resumes at latest video time`() =
+        runTest(testDispatcher) {
+            // Given
+            val player = mockk<DanmakuPlayer>(relaxed = true)
+            viewModel.danmakuPlayer = player
+            coEvery { videoPlayRepository.getDanmakuMeta(any(), any()) } returns DanmakuMeta(360_000, 8, false, 100)
+            coEvery { videoPlayRepository.getDanmakuSegment(any(), any(), any(), any()) } returns emptyList()
+            viewModel.setRenderingEnabled(false)
+            viewModel.play()
+            viewModel.loadDanmaku(1, 2)
+
+            // When
+            viewModel.onVideoPositionChanged(1_080_000)
+            advanceUntilIdle()
+
+            // Then
+            coVerify(exactly = 0) { videoPlayRepository.getDanmakuSegment(any(), any(), any(), any()) }
+            verify(exactly = 0) { player.start() }
+            viewModel.setRenderingEnabled(true)
+            advanceUntilIdle()
+            verify { player.seekTo(1_080_000) }
+            verify { player.start() }
+            coVerify { videoPlayRepository.getDanmakuSegment(1, 2, 4, any()) }
+            viewModel.release()
+        }
+
+    @Test
+    fun `cancelled prefetch can be loaded when returning to its segment`() =
+        runTest(testDispatcher) {
+            // Given
+            val pending = CompletableDeferred<List<DanmakuData>>()
+            coEvery { videoPlayRepository.getDanmakuMeta(any(), any()) } returns DanmakuMeta(360_000, 8, false, 100)
+            coEvery { videoPlayRepository.getDanmakuSegment(any(), any(), any(), any()) } returns emptyList()
+            coEvery { videoPlayRepository.getDanmakuSegment(1, 2, 2, any()) } coAnswers { pending.await() }
+            viewModel.loadDanmaku(1, 2)
+            // 只推进当前时刻，保持预取在途；advanceUntilIdle 会把三次十秒超时全部跑完。
+            runCurrent()
+            coVerify(exactly = 1) { videoPlayRepository.getDanmakuSegment(1, 2, 2, any()) }
+            assertThat(pending.isCompleted).isFalse()
+
+            // When
+            viewModel.onVideoPositionChanged(1_800_000)
+            advanceUntilIdle()
+            pending.complete(emptyList())
+            viewModel.onVideoPositionChanged(360_000)
+            advanceUntilIdle()
+
+            // Then
+            coVerify(exactly = 2) { videoPlayRepository.getDanmakuSegment(1, 2, 2, any()) }
+            viewModel.release()
+        }
+
+    @Test
+    fun `live rendering resumes its engine clock without seeking to VOD zero`() {
+        // Given: 直播没有 loadDanmaku/VOD cid，也不会喂入视频位置。
+        val player = mockk<DanmakuPlayer>(relaxed = true)
+        viewModel.danmakuPlayer = player
+        viewModel.setRenderingEnabled(false)
+        viewModel.play()
+
+        // When
+        viewModel.setRenderingEnabled(true)
+
+        // Then
+        verify(exactly = 0) { player.seekTo(any()) }
+        verify { player.setRenderingEnabled(true) }
+        verify { player.start() }
+    }
+
+    @Test
+    fun `mask loads only when enabled and old video request cannot publish`() =
+        runTest(testDispatcher) {
+            // Given
+            val oldRequest = CompletableDeferred<DanmakuMask?>()
+            val currentMask = mockk<DanmakuMask>(relaxed = true)
+            coEvery { videoPlayRepository.getDanmakuMask(1, 2, any()) } coAnswers { oldRequest.await() }
+            coEvery { videoPlayRepository.getDanmakuMask(3, 4, any()) } returns currentMask
+            viewModel.loadDanmakuMask(1, 2)
+            advanceUntilIdle()
+            coVerify(exactly = 0) { videoPlayRepository.getDanmakuMask(any(), any(), any()) }
+
+            // When
+            viewModel.updateDanmakuState(DanmakuSettingAction.SetMaskEnabled(true))
+            advanceUntilIdle()
+            viewModel.loadDanmakuMask(3, 4)
+            advanceUntilIdle()
+            oldRequest.complete(mockk(relaxed = true))
+            advanceUntilIdle()
+
+            // Then
+            assertThat(viewModel.danmakuMask.value).isSameInstanceAs(currentMask)
+            viewModel.setRenderingEnabled(false)
+            advanceUntilIdle()
+            assertThat(viewModel.danmakuMask.value).isNull()
+            viewModel.release()
+        }
+
+    @Test
+    fun `late noncancellable mask response cannot publish or clear new request flags`() =
+        runTest(testDispatcher) {
+            // Given
+            val oldResponse = CompletableDeferred<DanmakuMask?>()
+            val newResponse = CompletableDeferred<DanmakuMask?>()
+            val currentMask = mockk<DanmakuMask>(relaxed = true)
+            var requests = 0
+            coEvery { videoPlayRepository.getDanmakuMask(1, 2, any()) } coAnswers {
+                requests++
+                if (requests == 1) withContext(NonCancellable) { oldResponse.await() } else newResponse.await()
+            }
+            viewModel.loadDanmakuMask(1, 2)
+            viewModel.updateDanmakuState(DanmakuSettingAction.SetMaskEnabled(true))
+            runCurrent()
+
+            // When: 新请求使用同一视频标识，旧 finally 仍必须以代次区分。
+            viewModel.clearDanmaku()
+            viewModel.loadDanmakuMask(1, 2)
+            runCurrent()
+            oldResponse.complete(mockk(relaxed = true))
+            runCurrent()
+
+            // Then
+            assertThat(viewModel.danmakuMask.value).isNull()
+            viewModel.loadDanmakuMask(1, 2)
+            runCurrent()
+            coVerify(exactly = 2) { videoPlayRepository.getDanmakuMask(1, 2, any()) }
+            newResponse.complete(currentMask)
+            advanceUntilIdle()
+            assertThat(viewModel.danmakuMask.value).isSameInstanceAs(currentMask)
+            viewModel.release()
+        }
 
     @Test
     fun `onVideoPositionChanged seeks engine when position jumps beyond threshold`() {

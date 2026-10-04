@@ -23,17 +23,23 @@ import dev.frost819.newbv.core.log.Loggers
 import dev.frost819.newbv.danmaku.config.DanmakuState
 import dev.frost819.newbv.data.datastore.Prefs
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 import kotlin.math.abs
@@ -82,6 +88,14 @@ class DanmakuViewModel
          * 否则暂停/缓冲期间喂入跳变位置会让弹幕继续滚动。
          */
         private var danmakuRunning = false
+        private val renderingAllowed = MutableStateFlow(true)
+        private var engineRenderingEnabled = true
+
+        /** 后台转换调度器，单元测试替换为可控调度器。 */
+        internal var conversionDispatcher: CoroutineDispatcher = Dispatchers.Default
+
+        /** 蒙版流读取调度器，单元测试替换为可控调度器。 */
+        internal var maskFetchDispatcher: CoroutineDispatcher = Dispatchers.IO
 
         private var danmakuConfig = DanmakuConfig()
         private val danmakuTypeFilter = TypeFilter()
@@ -105,6 +119,11 @@ class DanmakuViewModel
 
         /** 蒙版请求独立于弹幕数据请求，切集时 cancel 旧请求即可。 */
         private var maskFetchJob: Job? = null
+        private var maskTarget: Pair<Long, Long>? = null
+        private var maskLoadedFor: Pair<Long, Long>? = null
+        private var maskRequestFor: Pair<Long, Long>? = null
+        private var maskGeneration = 0
+        private var metaFetchJob: Job? = null
 
         // === 分段加载状态 ===
 
@@ -140,15 +159,22 @@ class DanmakuViewModel
 
         /** 分段加载监听 Job，[loadDanmaku] 拿到元数据后启动。 */
         private var segmentWatchJob: Job? = null
+        private var retainedSegments = 1..2
 
         /** 初始化弹幕播放器。 */
         fun init() {
+            if (danmakuPlayer != null) return
             danmakuPlayer = DanmakuPlayer(SimpleRenderer())
             initDanmakuConfig()
+            applyRenderingState(force = true)
         }
 
         /** 释放弹幕播放器资源。 */
         fun release() {
+            loadGeneration++
+            maskGeneration++
+            metaFetchJob?.cancel()
+            metaFetchJob = null
             maskFetchJob?.cancel()
             maskFetchJob = null
             segmentWatchJob?.cancel()
@@ -156,6 +182,11 @@ class DanmakuViewModel
             danmakuPlayer?.release()
             danmakuPlayer = null
             _danmakuMask.update { null }
+            maskTarget = null
+            maskLoadedFor = null
+            maskRequestFor = null
+            loadedSegments.clear()
+            loadingSegments.clear()
         }
 
         /**
@@ -165,6 +196,9 @@ class DanmakuViewModel
          * 调用后应接着 [loadDanmaku] 加载新视频的弹幕。
          */
         fun clearDanmaku() {
+            metaFetchJob?.cancel()
+            metaFetchJob = null
+            maskGeneration++
             maskFetchJob?.cancel()
             maskFetchJob = null
             segmentWatchJob?.cancel()
@@ -177,6 +211,9 @@ class DanmakuViewModel
             // 引擎 updateData 是增量语义，必须调用 clearData 才能真正清空旧数据
             danmakuPlayer?.clearData()
             _danmakuMask.update { null }
+            maskTarget = null
+            maskLoadedFor = null
+            maskRequestFor = null
         }
 
         /**
@@ -196,6 +233,8 @@ class DanmakuViewModel
             initialPositionMs: Long = 0L,
         ) {
             val generation = ++loadGeneration
+            metaFetchJob?.cancel()
+            segmentWatchJob?.cancel()
             // 同步重置状态：切集后旧分段数据立即失效
             currentAid = aid
             currentCid = cid
@@ -207,35 +246,35 @@ class DanmakuViewModel
             currentTimeFlow.value = initialPositionMs.coerceAtLeast(0L)
             danmakuPlayer?.clearData()
 
-            viewModelScope.launch {
-                // 元数据决定分段大小与总数；失败仅记日志，回退默认分段大小继续加载
-                val meta =
-                    runCatching {
-                        withTimeout(SEGMENT_FETCH_TIMEOUT_MS) {
-                            videoPlayRepository.getDanmakuMeta(aid = aid, cid = cid)
+            metaFetchJob =
+                viewModelScope.launch {
+                    // 元数据决定分段大小与总数；失败仅记日志，回退默认分段大小继续加载
+                    val meta =
+                        runCatching {
+                            withTimeout(SEGMENT_FETCH_TIMEOUT_MS) {
+                                videoPlayRepository.getDanmakuMeta(aid = aid, cid = cid)
+                            }
+                        }.getOrElse { e ->
+                            if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                            logger.warn { "Load danmaku meta failed, fallback to default segment size: $e" }
+                            DanmakuMeta.DEFAULT
                         }
-                    }.getOrElse { e ->
-                        if (e is CancellationException && e !is TimeoutCancellationException) throw e
-                        logger.warn { "Load danmaku meta failed, fallback to default segment size: $e" }
-                        DanmakuMeta.DEFAULT
+                    if (generation != loadGeneration) return@launch
+
+                    if (meta.segmentSizeMs > 0) segmentSizeMs = meta.segmentSizeMs
+                    segmentTotal = meta.segTotal
+                    if (meta.closed) {
+                        danmakuClosed = true
+                        logger.info { "Danmaku closed for cid=$cid, skip segment loading" }
+                        return@launch
                     }
-                if (generation != loadGeneration) return@launch
+                    logger.info {
+                        "Danmaku meta: segmentSizeMs=$segmentSizeMs, segTotal=$segmentTotal, count=${meta.count}"
+                    }
 
-                if (meta.segmentSizeMs > 0) segmentSizeMs = meta.segmentSizeMs
-                segmentTotal = meta.segTotal
-                if (meta.closed) {
-                    danmakuClosed = true
-                    logger.info { "Danmaku closed for cid=$cid, skip segment loading" }
-                    return@launch
+                    startSegmentWatcher()
+                    // 触发初始段加载：watcher 订阅 StateFlow 时会立即收到当前值
                 }
-                logger.info {
-                    "Danmaku meta: segmentSizeMs=$segmentSizeMs, segTotal=$segmentTotal, count=${meta.count}"
-                }
-
-                startSegmentWatcher()
-                // 触发初始段加载：watcher 订阅 StateFlow 时会立即收到当前值
-                currentTimeFlow.value = initialPositionMs.coerceAtLeast(0L)
-            }
         }
 
         /**
@@ -247,8 +286,39 @@ class DanmakuViewModel
          *   渲染且不会自愈，因此位置跳变时必须显式对齐（见 [reconcileEngineTime]）
          */
         fun onVideoPositionChanged(timeMs: Long) {
-            currentTimeFlow.value = timeMs
-            reconcileEngineTime(videoTimeMs = timeMs, player = danmakuPlayer)
+            currentTimeFlow.value = timeMs.coerceAtLeast(0L)
+            if (isRenderingAllowed()) reconcileEngineTime(videoTimeMs = timeMs, player = danmakuPlayer)
+        }
+
+        /**
+         * 按页面可见状态控制弹幕计算和加载；弹幕类型开关会同时参与最终判断。
+         *
+         * 恢复时先对齐最新视频位置，再恢复之前收到的播放/暂停状态。
+         * @param enabled 页面是否允许弹幕渲染（前台且可见）。
+         */
+        fun setRenderingEnabled(enabled: Boolean) {
+            if (renderingAllowed.value == enabled) return
+            renderingAllowed.value = enabled
+            applyRenderingState()
+        }
+
+        private fun isRenderingAllowed(): Boolean =
+            renderingAllowed.value && _danmakuState.value.enabledTypes.isNotEmpty()
+
+        private fun applyRenderingState(force: Boolean = false) {
+            val enabled = isRenderingAllowed()
+            if (force || enabled != engineRenderingEnabled) {
+                engineRenderingEnabled = enabled
+                danmakuPlayer?.setRenderingEnabled(enabled)
+                if (enabled) {
+                    // 直播使用引擎自身时间排队，未喂入 VOD 进度，恢复时不能跳回默认的零位置。
+                    if (currentCid > 0L) danmakuPlayer?.seekTo(currentTimeFlow.value)
+                    if (danmakuRunning) danmakuPlayer?.start() else danmakuPlayer?.pause()
+                } else {
+                    danmakuPlayer?.pause()
+                }
+            }
+            refreshMaskRequest()
         }
 
         /**
@@ -283,9 +353,24 @@ class DanmakuViewModel
                 viewModelScope.launch {
                     currentTimeFlow
                         .map { segmentIndexOf(it) }
-                        .distinctUntilChanged()
-                        .collectLatest { targetSeg ->
-                            ensureSegments(targetSeg)
+                        .combine(
+                            renderingAllowed.combine(_danmakuState) { visible, state ->
+                                visible && state.enabledTypes.isNotEmpty()
+                            },
+                        ) { segment, enabled ->
+                            Triple(
+                                segment,
+                                enabled,
+                                maxOf(
+                                    MAX_DANMAKU_LIFETIME_MS,
+                                    danmakuConfig.durationMs,
+                                    danmakuConfig.rollingDurationMs,
+                                ),
+                            )
+                        }.distinctUntilChanged()
+                        .collectLatest { (targetSeg, enabled, lifetimeMs) ->
+                            updateRetainedWindow(targetSeg, lifetimeMs)
+                            if (enabled) ensureSegments(targetSeg)
                         }
                 }
         }
@@ -310,10 +395,31 @@ class DanmakuViewModel
          */
         private suspend fun ensureSegments(targetSeg: Int) {
             if (danmakuClosed || currentCid <= 0L) return
-            val toLoad = (targetSeg..(targetSeg + DEFAULT_SEGMENT_PREFETCH_AHEAD)).filter { canLoadSegment(it) }
+            val toLoad =
+                listOf(targetSeg) +
+                    (retainedSegments.first until targetSeg).reversed() +
+                    (targetSeg + 1..retainedSegments.last)
             for (seg in toLoad) {
-                fetchSegmentWithRetry(seg)
+                // 只标记实际开始的请求，避免 collectLatest 取消留下未执行预取的 loading 标记。
+                if (canLoadSegment(seg)) fetchSegmentWithRetry(seg)
             }
+        }
+
+        private fun updateRetainedWindow(
+            targetSeg: Int,
+            lifetimeMs: Long,
+        ) {
+            // 常规六分钟分段保留前/当前/后一共三段；短分段额外覆盖最大弹幕显示时长。
+            val behind = ((lifetimeMs + segmentSizeMs - 1) / segmentSizeMs).coerceAtLeast(1L).toInt()
+            val first = (targetSeg - behind).coerceAtLeast(1)
+            val last =
+                (targetSeg + DEFAULT_SEGMENT_PREFETCH_AHEAD)
+                    .let {
+                        if (segmentTotal > 0) it.coerceAtMost(segmentTotal) else it
+                    }.coerceAtLeast(first)
+            retainedSegments = first..last
+            loadedSegments.retainAll(retainedSegments.toSet())
+            danmakuPlayer?.retainData((first - 1L) * segmentSizeMs, last.toLong() * segmentSizeMs)
         }
 
         /**
@@ -338,19 +444,28 @@ class DanmakuViewModel
          * 其余 [CancellationException] 属外层取消（collectLatest 切段 / 切集），必须上抛。
          */
         private suspend fun fetchSegmentWithRetry(segmentIndex: Int) {
+            val aid = currentAid
+            val cid = currentCid
+            val generation = loadGeneration
             try {
                 repeat(SEGMENT_MAX_ATTEMPTS) { attempt ->
                     try {
                         val dataList =
                             withTimeout(SEGMENT_FETCH_TIMEOUT_MS) {
                                 videoPlayRepository.getDanmakuSegment(
-                                    aid = currentAid,
-                                    cid = currentCid,
+                                    aid = aid,
+                                    cid = cid,
                                     segmentIndex = segmentIndex,
                                     preferApiType = if (Prefs.apiType == DataApiType.App) ApiType.App else ApiType.Web,
                                 )
                             }
-                        val items = dataList.map { it.toDanmakuItemData() }
+                        val items = withContext(conversionDispatcher) { dataList.map { it.toDanmakuItemData() } }
+                        if (generation != loadGeneration ||
+                            cid != currentCid ||
+                            segmentIndex !in retainedSegments
+                        ) {
+                            return
+                        }
                         // akdanmaku 内部维护有序数据并懒排序，无需预先排序
                         danmakuPlayer?.updateData(items)
                         loadedSegments.add(segmentIndex)
@@ -380,7 +495,8 @@ class DanmakuViewModel
                 }
             } finally {
                 // 取消/失败/成功都要移除标记：失败段允许后续触发重试
-                loadingSegments.remove(segmentIndex)
+                // 切集后同段号可能已属于新请求，旧 finally 不能删除新视频的标记。
+                if (generation == loadGeneration) loadingSegments.remove(segmentIndex)
             }
         }
 
@@ -410,24 +526,67 @@ class DanmakuViewModel
             aid: Long,
             cid: Long,
         ) {
+            val target = aid to cid
+            if (maskTarget != target) {
+                maskGeneration++
+                maskFetchJob?.cancel()
+                maskFetchJob = null
+                maskLoadedFor = null
+                maskRequestFor = null
+                _danmakuMask.value = null
+                maskTarget = target
+            }
+            refreshMaskRequest()
+        }
+
+        private fun refreshMaskRequest() {
+            val target = maskTarget
+            if (!isRenderingAllowed() || !_danmakuState.value.maskEnabled || target == null) {
+                maskGeneration++
+                maskFetchJob?.cancel()
+                maskFetchJob = null
+                maskRequestFor = null
+                maskLoadedFor = null
+                _danmakuMask.value = null
+                return
+            }
+            if (maskLoadedFor == target || (maskFetchJob?.isActive == true && maskRequestFor == target)) return
+            val generation = ++maskGeneration
             maskFetchJob?.cancel()
+            maskRequestFor = target
             maskFetchJob =
-                viewModelScope.launch(Dispatchers.IO) {
+                viewModelScope.launch(maskFetchDispatcher) {
                     try {
                         val mask =
                             withTimeout(LOAD_TIMEOUT_MS) {
                                 videoPlayRepository.getDanmakuMask(
-                                    aid = aid,
-                                    cid = cid,
+                                    aid = target.first,
+                                    cid = target.second,
                                     preferApiType = if (Prefs.apiType == DataApiType.App) ApiType.App else ApiType.Web,
                                 )
                             }
-                        _danmakuMask.update { mask }
+                        withContext(Dispatchers.Main.immediate) {
+                            currentCoroutineContext().ensureActive()
+                            if (generation != maskGeneration || target != maskTarget) return@withContext
+                            if (!isRenderingAllowed() || !_danmakuState.value.maskEnabled) return@withContext
+                            maskLoadedFor = target
+                            _danmakuMask.value = mask
+                        }
                         logger.info { "Load danmaku mask segments: ${mask?.segmentCount ?: 0}" }
+                    } catch (e: TimeoutCancellationException) {
+                        logger.warn { "Load danmaku mask timed out: $e" }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
                         logger.warn { "Load danmaku mask failed: $e" }
+                    } finally {
+                        // 只清理本代请求；切集后旧请求结束不能移除新请求的标记。
+                        withContext(NonCancellable + Dispatchers.Main.immediate) {
+                            if (generation == maskGeneration && maskRequestFor == target) {
+                                maskRequestFor = null
+                                maskFetchJob = null
+                            }
+                        }
                     }
                 }
         }
@@ -435,7 +594,7 @@ class DanmakuViewModel
         /** 播放弹幕（与视频播放同步）。 */
         fun play() {
             danmakuRunning = true
-            danmakuPlayer?.start()
+            if (isRenderingAllowed()) danmakuPlayer?.start()
         }
 
         /** 暂停弹幕。 */
@@ -501,6 +660,7 @@ class DanmakuViewModel
             if (new.maskEnabled != old.maskEnabled) {
                 Prefs.defaultDanmakuMask = new.maskEnabled
             }
+            if (new.enabledTypes != old.enabledTypes || new.maskEnabled != old.maskEnabled) applyRenderingState()
         }
 
         private fun initDanmakuConfig() {
@@ -594,6 +754,7 @@ class DanmakuViewModel
 
             /** 预取目标段之后的分段数。 */
             private const val DEFAULT_SEGMENT_PREFETCH_AHEAD = 1
+            private const val MAX_DANMAKU_LIFETIME_MS = DanmakuPlayer.MAX_DANMAKU_DURATION_HIGH_DENSITY
 
             /** 单段最大尝试次数（首次 + 重试）。 */
             private const val SEGMENT_MAX_ATTEMPTS = 3

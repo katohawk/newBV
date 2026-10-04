@@ -11,6 +11,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -48,6 +49,37 @@ class PrefsTest {
     }
 
     // ===== 默认值测试 =====
+
+    @Test
+    fun `theme and density flows keep one subscription across repeated reads`() {
+        // Given
+        val themeFlow = Prefs.themeModeFlow
+        val densityFlow = Prefs.densityFlow
+        val themeSource = requireNotNull(Prefs.flowOf(PrefKeys.themeMode))
+        val densitySource = requireNotNull(Prefs.flowOf(PrefKeys.density))
+
+        // When
+        repeat(100) {
+            assertThat(Prefs.themeModeFlow).isSameInstanceAs(themeFlow)
+            assertThat(Prefs.densityFlow).isSameInstanceAs(densityFlow)
+        }
+
+        // Then
+        runBlocking {
+            withTimeout(5_000) {
+                themeSource.subscriptionCount.first { it == 1 }
+                densitySource.subscriptionCount.first { it == 1 }
+                Prefs.themeMode = ThemeMode.Light
+                Prefs.density = 1.5f
+                assertThat(themeFlow.first { it == ThemeMode.Light }).isEqualTo(ThemeMode.Light)
+                assertThat(densityFlow.first { it == 1.5f }).isEqualTo(1.5f)
+                Prefs.themeMode = ThemeMode.Dark
+                Prefs.density = 2f
+                assertThat(themeFlow.first { it == ThemeMode.Dark }).isEqualTo(ThemeMode.Dark)
+                assertThat(densityFlow.first { it == 2f }).isEqualTo(2f)
+            }
+        }
+    }
 
     @Test
     fun `default isLogin is false`() {

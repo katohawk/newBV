@@ -72,6 +72,9 @@ internal class DataSystem(
     private var entityEntryTime = 0L
 
     private var forceUpdate = false
+    private var clearRequested = false
+    private var retainedRange: LongRange? = null
+    private var retentionRequested = false
 
     private var holdingItem: DanmakuItem? = null
 
@@ -131,6 +134,7 @@ internal class DataSystem(
     }
 
     fun updateEntities() {
+        applyPendingChanges()
         val config = danmakuContext.config
         val durationMs = config.durationMs
         val rollingDurationMs = config.rollingDurationMs
@@ -286,7 +290,7 @@ internal class DataSystem(
 
     fun addItems(items: Collection<DanmakuItem>) {
         synchronized(this) {
-            pendingAddItems.addAll(items)
+            pendingAddItems.addAll(items.filter { retainedRange?.contains(it.data.position) != false })
         }
     }
 
@@ -300,13 +304,51 @@ internal class DataSystem(
      * 注意：[updateData] 等价于增量追加而非整体替换，旧数据必须通过本方法清除。
      */
     fun clearData() {
+        synchronized(this) {
+            // 丢弃已经排队的旧视频数据；此后追加的新视频数据不能被异步清理删除。
+            pendingAddItems.clear()
+            pendingUpdateItems.clear()
+            retainedRange = null
+            retentionRequested = false
+            clearRequested = true
+        }
+    }
+
+    /**
+     * 限制原始数据的时间窗口，由计算线程统一裁剪实体和切片。
+     * @param startInclusiveMs 窗口起点（毫秒，含）。
+     * @param endExclusiveMs 窗口终点（毫秒，不含）。
+     */
+    fun retainData(
+        startInclusiveMs: Long,
+        endExclusiveMs: Long,
+    ) {
+        synchronized(this) {
+            retainedRange = startInclusiveMs until endExclusiveMs
+            retentionRequested = true
+        }
+    }
+
+    /** 在计算线程应用清空/裁剪请求，保持与增量追加的顺序一致。 */
+    fun applyPendingChanges() {
+        val clear: Boolean
+        val range: LongRange?
+        synchronized(this) {
+            clear = clearRequested
+            clearRequested = false
+            range = if (retentionRequested) retainedRange else null
+            retentionRequested = false
+        }
+        if (clear) clearStoredData()
+        if (range != null) trimStoredData(range)
+    }
+
+    private fun clearStoredData() {
         // 先移除实体，避免 update 回调访问已被复位的数据结构
         for (entity in getEntities().toList()) {
             engine.removeEntity(entity)
         }
         synchronized(this) {
-            pendingAddItems.clear()
-            pendingUpdateItems.clear()
             pendingCreateItems.clear()
             sortedData.clear()
             idSet.clear()
@@ -322,15 +364,38 @@ internal class DataSystem(
         }
     }
 
+    private fun trimStoredData(range: LongRange) {
+        for (entity in getEntities().toList()) {
+            val item = entity.dataComponent?.item ?: continue
+            if (item.data.position !in range) {
+                idSet.remove(item.data.danmakuId)
+                engine.removeEntity(entity)
+            }
+        }
+        synchronized(this) {
+            sortedData.removeAll { it.data.position !in range }
+            pendingAddItems.removeAll { it.data.position !in range }
+            pendingUpdateItems.removeAll { it.data.position !in range }
+            pendingCreateItems.removeAll { it.data.position !in range }
+            holdingItem?.takeIf { it.data.position !in range }?.let {
+                it.unhold()
+                holdingItem = null
+            }
+            // 不回收 item：主线程可能仍在使用上一帧 RenderResult 的引用。
+            currentData = Danmakus(Collections.synchronizedList(TreeList()), 0L, 0L, -1, -1)
+            forceUpdate = true
+        }
+    }
+
     fun addItem(item: DanmakuItem) {
         synchronized(this) {
-            pendingAddItems.add(item)
+            if (retainedRange?.contains(item.data.position) != false) pendingAddItems.add(item)
         }
     }
 
     fun updateItem(item: DanmakuItem) {
         synchronized(this) {
-            pendingUpdateItems.add(item)
+            if (retainedRange?.contains(item.data.position) != false) pendingUpdateItems.add(item)
         }
     }
 

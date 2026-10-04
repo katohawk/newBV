@@ -71,6 +71,8 @@ import kotlinx.coroutines.launch
  * 6. ControllerVideoInfo — 信息栏 + 进度条 + 按钮
  * 7. VideoListController — 分集列表
  * 8. MenuController — 设置菜单
+ *
+ * @param onVideoFocused 选集面板父视频获得焦点时按需补齐分P。
  */
 @Composable
 @Suppress("LongParameterList", "CyclomaticComplexMethod")
@@ -109,6 +111,7 @@ fun VideoPlayerController(
     isMaskEditing: Boolean,
     onScreenMaskChange: (ScreenMaskConfig) -> Unit,
     onEditScreenMask: () -> Unit,
+    onVideoFocused: (Long) -> Unit = {},
     content: @Composable () -> Unit,
 ) {
     val controllerFocus = remember { FocusRequester() }
@@ -593,6 +596,7 @@ fun VideoPlayerController(
 
             // 分集列表
             VideoListController(
+                onVideoFocused = onVideoFocused,
                 show = showListController,
                 currentCid = uiState.cid,
                 videoList = uiState.videoList,

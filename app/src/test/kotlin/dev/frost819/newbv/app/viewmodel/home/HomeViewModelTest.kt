@@ -11,10 +11,9 @@ import dev.frost819.newbv.biliapi.entity.home.RecommendPage
 import dev.frost819.newbv.biliapi.entity.rank.PopularVideoData
 import dev.frost819.newbv.biliapi.entity.rank.PopularVideoPage
 import dev.frost819.newbv.biliapi.entity.ugc.UgcItem
-import dev.frost819.newbv.biliapi.entity.user.DynamicVideo
-import dev.frost819.newbv.biliapi.entity.user.DynamicVideoData
 import dev.frost819.newbv.biliapi.repositories.RecommendVideoRepository
 import dev.frost819.newbv.biliapi.repositories.UserRepository
+import dev.frost819.newbv.data.datastore.HomeTopNavItem
 import dev.frost819.newbv.data.datastore.Prefs
 import dev.frost819.newbv.data.quickentry.QuickEntry
 import dev.frost819.newbv.data.quickentry.QuickEntryRepository
@@ -23,8 +22,10 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -34,6 +35,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
@@ -46,7 +48,7 @@ import java.io.IOException
 /**
  * [HomeViewModel] 的单元测试。
  *
- * 验证推荐/热门/动态数据加载、分页、刷新逻辑。
+ * 验证可见推荐/热门按需加载、分页、刷新及账户失效。
  * 使用 MockK mock [RecommendVideoRepository] 和 [UserRepository]。
  * Prefs 初始化一次，每个测试前 clear 重置。
  */
@@ -97,19 +99,6 @@ class HomeViewModelTest {
             duration = 120,
         )
 
-    private fun fakeDynamicVideo(aid: Long) =
-        DynamicVideo(
-            aid = aid,
-            cid = aid * 10,
-            title = "dynamic $aid",
-            cover = "http://example.com/cover.jpg",
-            author = "up",
-            authorMid = 100L,
-            duration = 120,
-            play = 10000,
-            danmaku = 500,
-        )
-
     @BeforeEach
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
@@ -133,16 +122,15 @@ class HomeViewModelTest {
                 nextPage = PopularVideoPage(),
                 noMore = false,
             )
-        coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } returns
-            DynamicVideoData(
-                videos = listOf(fakeDynamicVideo(5), fakeDynamicVideo(6)),
-                hasMore = true,
-                historyOffset = "offset1",
-                updateBaseline = "baseline1",
-            )
     }
 
-    private fun createViewModel() = HomeViewModel(recommendRepo, userRepo, accountRepo, quickEntryRepo)
+    private fun createViewModel(autoLoad: Boolean = true) =
+        HomeViewModel(recommendRepo, userRepo, accountRepo, quickEntryRepo).also {
+            if (autoLoad) {
+                it.ensureLoaded(HomeTopNavItem.Recommend)
+                it.ensureLoaded(HomeTopNavItem.Popular)
+            }
+        }
 
     @AfterEach
     fun tearDown() {
@@ -218,7 +206,7 @@ class HomeViewModelTest {
         }
 
     @Test
-    fun `init loads recommend and popular`() =
+    fun `visible tabs load recommend and popular`() =
         runTest(testDispatcher) {
             viewModel = createViewModel()
             advanceUntilIdle()
@@ -226,17 +214,6 @@ class HomeViewModelTest {
             val state = viewModel.uiState.value
             assertThat(state.recommendItems).isNotEmpty()
             assertThat(state.popularItems).isNotEmpty()
-        }
-
-    @Test
-    fun `init does not load dynamics when not logged in`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            val state = viewModel.uiState.value
-            assertThat(state.dynamicItems).isEmpty()
-            assertThat(state.isLogin).isFalse()
         }
 
     @Test
@@ -370,57 +347,6 @@ class HomeViewModelTest {
         }
 
     @Test
-    fun `refreshDynamic does nothing when not logged in`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            viewModel.refreshDynamic()
-            advanceUntilIdle()
-
-            val state = viewModel.uiState.value
-            assertThat(state.dynamicItems).isEmpty()
-        }
-
-    @Test
-    fun `updateLoginState to true triggers dynamic load`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } returns
-                DynamicVideoData(
-                    videos = listOf(fakeDynamicVideo(10)),
-                    hasMore = false,
-                    historyOffset = "offset",
-                    updateBaseline = "baseline",
-                )
-
-            viewModel.updateLoginState(true)
-            advanceUntilIdle()
-
-            val state = viewModel.uiState.value
-            assertThat(state.isLogin).isTrue()
-            assertThat(state.dynamicItems).isNotEmpty()
-        }
-
-    @Test
-    fun `updateLoginState to false clears dynamics`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            viewModel.updateLoginState(true)
-            advanceUntilIdle()
-            viewModel.updateLoginState(false)
-            advanceUntilIdle()
-
-            val state = viewModel.uiState.value
-            assertThat(state.isLogin).isFalse()
-            assertThat(state.dynamicItems).isEmpty()
-        }
-
-    @Test
     fun `refresh dispatches correct tab`() =
         runTest(testDispatcher) {
             viewModel = createViewModel()
@@ -459,72 +385,6 @@ class HomeViewModelTest {
 
             val state = viewModel.uiState.value
             assertThat(state.popularItems.any { it.aid == 888L }).isTrue()
-        }
-
-    @Test
-    fun `loadDynamic loads items when logged in`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } returns
-                DynamicVideoData(
-                    videos = listOf(fakeDynamicVideo(10), fakeDynamicVideo(11)),
-                    hasMore = false,
-                    historyOffset = "offset",
-                    updateBaseline = "baseline",
-                )
-
-            viewModel.updateLoginState(true)
-            advanceUntilIdle()
-
-            val state = viewModel.uiState.value
-            assertThat(state.isLogin).isTrue()
-            assertThat(state.dynamicItems).hasSize(2)
-            assertThat(state.dynamicLoading).isFalse()
-            assertThat(state.dynamicHasMore).isFalse()
-        }
-
-    @Test
-    fun `loadDynamic sets error on failure`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } throws RuntimeException("network error")
-
-            viewModel.updateLoginState(true)
-            advanceUntilIdle()
-
-            val state = viewModel.uiState.value
-            assertThat(state.dynamicError).isTrue()
-            assertThat(state.dynamicLoading).isFalse()
-        }
-
-    @Test
-    fun `loadDynamic is no-op when hasMore is false`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } returns
-                DynamicVideoData(
-                    videos = listOf(fakeDynamicVideo(10)),
-                    hasMore = false,
-                    historyOffset = "offset",
-                    updateBaseline = "baseline",
-                )
-
-            viewModel.updateLoginState(true)
-            advanceUntilIdle()
-
-            assertThat(viewModel.uiState.value.dynamicItems).hasSize(1)
-            assertThat(viewModel.uiState.value.dynamicHasMore).isFalse()
-
-            viewModel.loadDynamic()
-            advanceUntilIdle()
-
-            coVerify(exactly = 1) { userRepo.getDynamicVideos(any(), any(), any(), any()) }
         }
 
     @Test
@@ -641,99 +501,6 @@ class HomeViewModelTest {
         }
 
     @Test
-    fun `refresh dispatches Dynamics tab when logged in`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } returns
-                DynamicVideoData(
-                    videos = listOf(fakeDynamicVideo(10)),
-                    hasMore = false,
-                    historyOffset = "o",
-                    updateBaseline = "b",
-                )
-            viewModel.updateLoginState(true)
-            advanceUntilIdle()
-
-            coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } returns
-                DynamicVideoData(
-                    videos = listOf(fakeDynamicVideo(66)),
-                    hasMore = false,
-                    historyOffset = "o2",
-                    updateBaseline = "b2",
-                )
-
-            viewModel.refresh(dev.frost819.newbv.data.datastore.HomeTopNavItem.Dynamics)
-            advanceUntilIdle()
-
-            assertThat(
-                viewModel.uiState.value.dynamicItems[0]
-                    .aid,
-            ).isEqualTo(66)
-        }
-
-    @Test
-    fun `loadMore dispatches Dynamics tab when logged in`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } returns
-                DynamicVideoData(
-                    videos = listOf(fakeDynamicVideo(10)),
-                    hasMore = true,
-                    historyOffset = "offset1",
-                    updateBaseline = "baseline1",
-                )
-            viewModel.updateLoginState(true)
-            advanceUntilIdle()
-
-            assertThat(viewModel.uiState.value.dynamicItems).hasSize(1)
-
-            coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } returns
-                DynamicVideoData(
-                    videos = listOf(fakeDynamicVideo(20)),
-                    hasMore = false,
-                    historyOffset = "offset2",
-                    updateBaseline = "baseline2",
-                )
-
-            viewModel.loadMore(dev.frost819.newbv.data.datastore.HomeTopNavItem.Dynamics)
-            advanceUntilIdle()
-
-            assertThat(viewModel.uiState.value.dynamicItems).hasSize(2)
-            assertThat(
-                viewModel.uiState.value.dynamicItems[1]
-                    .aid,
-            ).isEqualTo(20)
-        }
-
-    @Test
-    fun `updateLoginState to true with existing dynamics does not duplicate load`() =
-        runTest(testDispatcher) {
-            viewModel = createViewModel()
-            advanceUntilIdle()
-
-            coEvery { userRepo.getDynamicVideos(any(), any(), any(), any()) } returns
-                DynamicVideoData(
-                    videos = listOf(fakeDynamicVideo(10)),
-                    hasMore = false,
-                    historyOffset = "offset",
-                    updateBaseline = "baseline",
-                )
-            viewModel.updateLoginState(true)
-            advanceUntilIdle()
-
-            assertThat(viewModel.uiState.value.dynamicItems).hasSize(1)
-
-            viewModel.updateLoginState(true)
-            advanceUntilIdle()
-
-            assertThat(viewModel.uiState.value.dynamicItems).hasSize(1)
-        }
-
-    @Test
     fun `refreshPopular clears error`() =
         runTest(testDispatcher) {
             viewModel = createViewModel()
@@ -755,5 +522,161 @@ class HomeViewModelTest {
 
             assertThat(viewModel.uiState.value.popularError).isFalse()
             assertThat(viewModel.uiState.value.popularItems).isNotEmpty()
+        }
+
+    @Test
+    fun `construction requests no feed and first visible tab loads only itself`() =
+        runTest(testDispatcher) {
+            // Given
+            viewModel = createViewModel(autoLoad = false)
+            advanceUntilIdle()
+            coVerify(exactly = 0) { recommendRepo.getRecommendVideos(any(), any()) }
+            coVerify(exactly = 0) { recommendRepo.getPopularVideos(any(), any()) }
+
+            // When
+            viewModel.ensureLoaded(HomeTopNavItem.Popular)
+            advanceUntilIdle()
+            viewModel.ensureLoaded(HomeTopNavItem.Popular)
+            advanceUntilIdle()
+
+            // Then
+            coVerify(exactly = 1) { recommendRepo.getPopularVideos(any(), any()) }
+            coVerify(exactly = 0) { recommendRepo.getRecommendVideos(any(), any()) }
+            coVerify(exactly = 0) { userRepo.getDynamicVideos(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun `successful empty feed is cached and exhausted pages do not reload`() =
+        runTest(testDispatcher) {
+            // Given
+            coEvery { recommendRepo.getRecommendVideos(any(), any()) } returns
+                RecommendData(emptyList(), RecommendPage())
+            viewModel = createViewModel(autoLoad = false)
+
+            // When
+            viewModel.ensureLoaded(HomeTopNavItem.Recommend)
+            advanceUntilIdle()
+            viewModel.ensureLoaded(HomeTopNavItem.Recommend)
+            viewModel.loadRecommend()
+            advanceUntilIdle()
+
+            // Then
+            coVerify(exactly = 1) { recommendRepo.getRecommendVideos(any(), any()) }
+            assertThat(viewModel.uiState.value.recommendHasMore).isFalse()
+        }
+
+    @Test
+    fun `failed visible tab waits for explicit refresh`() =
+        runTest(testDispatcher) {
+            // Given
+            coEvery { recommendRepo.getPopularVideos(any(), any()) } throws IOException("offline")
+            viewModel = createViewModel(autoLoad = false)
+            viewModel.ensureLoaded(HomeTopNavItem.Popular)
+            advanceUntilIdle()
+
+            // When
+            viewModel.ensureLoaded(HomeTopNavItem.Popular)
+            advanceUntilIdle()
+
+            // Then
+            coVerify(exactly = 1) { recommendRepo.getPopularVideos(any(), any()) }
+            assertThat(viewModel.uiState.value.popularError).isTrue()
+        }
+
+    @Test
+    fun `refresh during pending recommend replaces the request and ignores its late result`() =
+        runTest(testDispatcher) {
+            // Given
+            val pending = CompletableDeferred<RecommendData>()
+            var first = true
+            coEvery { recommendRepo.getRecommendVideos(any(), any()) } coAnswers {
+                if (first) {
+                    first = false
+                    withContext(NonCancellable) { pending.await() }
+                } else {
+                    RecommendData((100L..123L).map(::fakeUgcItem), RecommendPage())
+                }
+            }
+            viewModel = createViewModel(autoLoad = false)
+            viewModel.ensureLoaded(HomeTopNavItem.Recommend)
+            runCurrent()
+
+            // When
+            viewModel.refreshRecommend()
+            runCurrent()
+            pending.complete(RecommendData((1L..24L).map(::fakeUgcItem), RecommendPage()))
+            advanceUntilIdle()
+
+            // Then
+            assertThat(
+                viewModel.uiState.value.recommendItems
+                    .map { it.aid },
+            ).containsExactlyElementsIn(100L..123L).inOrder()
+            assertThat(viewModel.uiState.value.recommendLoading).isFalse()
+            coVerify(exactly = 2) { recommendRepo.getRecommendVideos(any(), any()) }
+        }
+
+    @Test
+    fun `account changes invalidate cached tabs without requesting hidden pages`() =
+        runTest(testDispatcher) {
+            // Given
+            val accounts = MutableStateFlow(AccountUiState(isLogin = true, uid = 1))
+            every { accountRepo.uiState } returns accounts
+            viewModel = createViewModel()
+            advanceUntilIdle()
+
+            // When
+            accounts.value = AccountUiState(isLogin = true, uid = 2)
+            advanceUntilIdle()
+
+            // Then
+            assertThat(viewModel.uiState.value.currentUid).isEqualTo(2)
+            assertThat(viewModel.uiState.value.recommendItems).isEmpty()
+            assertThat(viewModel.uiState.value.popularItems).isEmpty()
+            coVerify(exactly = 3) { recommendRepo.getRecommendVideos(any(), any()) }
+            coVerify(exactly = 1) { recommendRepo.getPopularVideos(any(), any()) }
+            viewModel.ensureLoaded(HomeTopNavItem.Popular)
+            advanceUntilIdle()
+            coVerify(exactly = 2) { recommendRepo.getPopularVideos(any(), any()) }
+            coVerify(exactly = 3) { recommendRepo.getRecommendVideos(any(), any()) }
+        }
+
+    @Test
+    fun `returning to same uid still rejects the request from its previous generation`() =
+        runTest(testDispatcher) {
+            // Given
+            val accounts = MutableStateFlow(AccountUiState(isLogin = true, uid = 1))
+            every { accountRepo.uiState } returns accounts
+            val pending = CompletableDeferred<PopularVideoData>()
+            var first = true
+            coEvery { recommendRepo.getPopularVideos(any(), any()) } coAnswers {
+                if (first) {
+                    first = false
+                    withContext(NonCancellable) { pending.await() }
+                } else {
+                    PopularVideoData(listOf(fakeUgcItem(100)), PopularVideoPage(), noMore = true)
+                }
+            }
+            viewModel = createViewModel(autoLoad = false)
+            viewModel.ensureLoaded(HomeTopNavItem.Popular)
+            runCurrent()
+
+            // When
+            accounts.value = AccountUiState(isLogin = true, uid = 2)
+            runCurrent()
+            accounts.value = AccountUiState(isLogin = true, uid = 1)
+            runCurrent()
+            viewModel.ensureLoaded(HomeTopNavItem.Popular)
+            runCurrent()
+            pending.complete(PopularVideoData(listOf(fakeUgcItem(1)), PopularVideoPage(), noMore = false))
+            advanceUntilIdle()
+
+            // Then
+            assertThat(
+                viewModel.uiState.value.popularItems
+                    .map { it.aid },
+            ).containsExactly(100L)
+            assertThat(viewModel.uiState.value.popularHasMore).isFalse()
+            assertThat(viewModel.uiState.value.popularLoading).isFalse()
         }
 }

@@ -426,23 +426,23 @@ object Prefs {
 
     // ===== Flow 属性（用于 Compose collectAsState 实时观察） =====
 
-    /** 主题模式 Flow（实时响应设置变更）。 */
-    val themeModeFlow: StateFlow<ThemeMode>
-        get() =
-            (delegateMap[PrefKeys.themeMode] as? PrefDelegate<ThemeMode, Int>)
-                ?.flow
-                ?.map { ThemeMode.fromOrdinal(it as? Int ?: 1) }
-                ?.stateIn(scope, SharingStarted.Eagerly, ThemeMode.Dark)
-                ?: MutableStateFlow(ThemeMode.Dark)
+    /** 主题模式 Flow；首次使用已恢复的偏好，所有界面复用同一个订阅。 */
+    val themeModeFlow: StateFlow<ThemeMode> by lazy {
+        delegateMap
+            .getValue(PrefKeys.themeMode)
+            .flow
+            .map { ThemeMode.fromOrdinal(it as? Int ?: ThemeMode.Dark.ordinal) }
+            .stateIn(scope, SharingStarted.Eagerly, themeMode)
+    }
 
-    /** Density Flow（实时响应设置变更）。 */
-    val densityFlow: StateFlow<Float>
-        get() =
-            (delegateMap[PrefKeys.density] as? PrefDelegate<Float, Float>)
-                ?.flow
-                ?.map { it as? Float ?: 2f }
-                ?.stateIn(scope, SharingStarted.Eagerly, 2f)
-                ?: MutableStateFlow(2f)
+    /** 界面缩放 Flow；首次使用已恢复的偏好，重组和 Activity 重建不创建新订阅。 */
+    val densityFlow: StateFlow<Float> by lazy {
+        delegateMap
+            .getValue(PrefKeys.density)
+            .flow
+            .map { it as? Float ?: 2f }
+            .stateIn(scope, SharingStarted.Eagerly, density)
+    }
 
     // ===== 初始化 =====
 

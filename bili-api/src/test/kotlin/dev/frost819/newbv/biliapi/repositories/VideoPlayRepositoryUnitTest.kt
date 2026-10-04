@@ -22,6 +22,9 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -329,11 +332,14 @@ class VideoPlayRepositoryUnitTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `getSubtitle App returns empty list when danmakuStub is null`() =
+    fun `getSubtitle App fails without caching when danmakuStub is null`() =
         runTest {
-            val result = repository.getSubtitle(aid = AID, cid = CID, preferApiType = ApiType.App)
-
-            assertThat(result).isEmpty()
+            assertThrows<IllegalStateException> {
+                repository.getSubtitle(aid = AID, cid = CID, preferApiType = ApiType.App)
+            }
+            assertThrows<IllegalStateException> {
+                repository.getSubtitle(aid = AID, cid = CID, preferApiType = ApiType.App)
+            }
         }
 
     // ------------------------------------------------------------------
@@ -556,11 +562,11 @@ class VideoPlayRepositoryUnitTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `getDanmakuMask App returns null when danmakuStub is null`() =
+    fun `getDanmakuMask App fails when danmakuStub is null`() =
         runTest {
-            val result = repository.getDanmakuMask(aid = AID, cid = CID, preferApiType = ApiType.App)
-
-            assertThat(result).isNull()
+            assertThrows<IllegalStateException> {
+                repository.getDanmakuMask(aid = AID, cid = CID, preferApiType = ApiType.App)
+            }
         }
 
     // ------------------------------------------------------------------
@@ -724,6 +730,55 @@ class VideoPlayRepositoryUnitTest {
     // ------------------------------------------------------------------
     // 测试夹具
     // ------------------------------------------------------------------
+
+    @Test
+    fun `subtitle and mask share one in flight metadata request`() =
+        runTest {
+            // Given
+            val response = CompletableDeferred<VideoMoreInfo>()
+            coEvery { BiliHttpApi.getVideoMoreInfo(any(), any()) } coAnswers {
+                BiliResponse(code = 0, message = "", data = response.await())
+            }
+            // When
+            val subtitle = async { repository.getSubtitle(AID, CID, ApiType.Web) }
+            val mask = async { repository.getDanmakuMask(AID, CID, ApiType.Web) }
+            runCurrent()
+            response.complete(fakeVideoMoreInfoWithSubtitles())
+            subtitle.await()
+            mask.await()
+            // Then
+            coVerify(exactly = 1) { BiliHttpApi.getVideoMoreInfo(any(), any()) }
+        }
+
+    @Test
+    fun `playback or credentials changes invalidate the metadata slot`() =
+        runTest {
+            // Given
+            coEvery { BiliHttpApi.getVideoMoreInfo(any(), any()) } returns
+                BiliResponse(code = 0, message = "", data = fakeVideoMoreInfoNoSubtitle())
+            repository.getSubtitle(AID, CID, ApiType.Web)
+            // When
+            repository.getDanmakuMask(AID, CID, ApiType.Web)
+            repository.clearPlaybackMetadata()
+            repository.getSubtitle(AID, CID, ApiType.Web)
+            authRepository.accessToken = "changed-test-token"
+            repository.getSubtitle(AID, CID, ApiType.Web)
+            // Then
+            coVerify(exactly = 3) { BiliHttpApi.getVideoMoreInfo(any(), any()) }
+        }
+
+    @Test
+    fun `failed metadata request is not cached`() =
+        runTest {
+            // Given
+            coEvery { BiliHttpApi.getVideoMoreInfo(any(), any()) } throws java.io.IOException("offline")
+            kotlin.runCatching { repository.getSubtitle(AID, CID, ApiType.Web) }
+            coEvery { BiliHttpApi.getVideoMoreInfo(any(), any()) } returns
+                BiliResponse(code = 0, message = "", data = fakeVideoMoreInfoWithSubtitles())
+            // When / Then
+            assertThat(repository.getSubtitle(AID, CID, ApiType.Web)).hasSize(2)
+            coVerify(exactly = 2) { BiliHttpApi.getVideoMoreInfo(any(), any()) }
+        }
 
     private fun fakeDanmakuData(time: Float): DanmakuData =
         DanmakuData(

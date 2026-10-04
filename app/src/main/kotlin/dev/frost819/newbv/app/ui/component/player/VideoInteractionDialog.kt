@@ -24,6 +24,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.tv.material3.Button
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
@@ -41,6 +42,7 @@ import dev.frost819.newbv.core.theme.BVTheme
  * @param onCoin 投币
  * @param onFavorite 收藏/取消收藏
  * @param onOneClickTriple 长按点赞触发一键三连
+ * @param onRetryActions 操作状态加载失败时重试。
  * @param onDismiss 关闭回调
  */
 @Composable
@@ -51,6 +53,7 @@ fun VideoInteractionDialog(
     onFavorite: () -> Unit,
     onOneClickTriple: () -> Unit,
     onDismiss: () -> Unit,
+    onRetryActions: () -> Unit = {},
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -80,6 +83,13 @@ fun VideoInteractionDialog(
                         style = MaterialTheme.typography.titleLarge,
                     )
 
+                    val ready = actionState?.userActionsLoaded == true
+                    if (!ready) {
+                        Text(if (actionState?.userActionsError == true) "操作状态加载失败" else "操作状态加载中")
+                    }
+                    if (actionState?.userActionsError == true) {
+                        Button(onClick = onRetryActions) { Text("重试") }
+                    }
                     val loop = rememberPlayerFocusLoop(3, horizontal = true)
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -94,6 +104,7 @@ fun VideoInteractionDialog(
                                     Icons.Outlined.ThumbUp
                                 },
                             modifier = loop(true, false),
+                            enabled = ready,
                             onClick = onLike,
                             onLongClick = onOneClickTriple,
                         )
@@ -106,6 +117,7 @@ fun VideoInteractionDialog(
                                 } else {
                                     Icons.Outlined.Paid
                                 },
+                            enabled = ready,
                             onClick = onCoin,
                         )
 
@@ -118,6 +130,7 @@ fun VideoInteractionDialog(
                                     Icons.Outlined.StarBorder
                                 },
                             modifier = loop(false, true),
+                            enabled = ready,
                             onClick = onFavorite,
                         )
                     }
@@ -134,12 +147,14 @@ private fun InteractionAction(
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Surface(
         modifier =
             modifier
                 .size(100.dp)
-                .touchClickable(onClick = onClick, onLongClick = onLongClick),
+                .then(if (enabled) Modifier.touchClickable(onClick = onClick, onLongClick = onLongClick) else Modifier),
+        enabled = enabled,
         onClick = onClick,
         onLongClick = onLongClick,
         shape = ClickableSurfaceDefaults.shape(shape = MaterialTheme.shapes.medium),
@@ -170,6 +185,7 @@ private fun VideoInteractionDialogPreview() {
             actionState =
                 VideoSharedState(
                     aid = 1L,
+                    userActionsLoaded = true,
                     liked = false,
                     coined = false,
                     favorited = false,
@@ -191,6 +207,7 @@ private fun VideoInteractionDialogAllDonePreview() {
             actionState =
                 VideoSharedState(
                     aid = 1L,
+                    userActionsLoaded = true,
                     liked = true,
                     coined = true,
                     favorited = true,

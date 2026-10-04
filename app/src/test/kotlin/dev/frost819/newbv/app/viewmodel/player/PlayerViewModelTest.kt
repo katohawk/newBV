@@ -41,7 +41,9 @@ import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -108,6 +110,8 @@ class PlayerViewModelTest {
         every { Prefs.defaultVideoCodec } returns VideoCodec.AVC
         every { Prefs.defaultAudio } returns Audio.A192K
         every { Prefs.uid } returns 1L
+        every { Prefs.sessData } returns "test-session"
+        every { Prefs.accessToken } returns "test-token"
         every { Prefs.skipIntroOutro } returns false
         every { Prefs.incognitoMode } returns true
         every { Prefs.actionAfterPlay } returns ActionAfterPlay.Pause
@@ -120,6 +124,7 @@ class PlayerViewModelTest {
         every { videoInfoRepository.videoList } returns MutableStateFlow(emptyList())
         every { videoInfoRepository.relatedVideos } returns MutableStateFlow(emptyList())
         every { videoInfoRepository.videoSharedState } returns MutableStateFlow(null)
+        coEvery { videoInfoRepository.ensureUgcPages(any(), any()) } returns true
 
         viewModel =
             PlayerViewModel(
@@ -1170,6 +1175,7 @@ class PlayerViewModelTest {
         val detail = mockk<VideoDetail>()
         every { detail.aid } returns 10L
         every { detail.cid } returns cid
+        every { detail.title } returns "Video"
         every { detail.author } returns Author(mid = 42L, name = "UP", face = "face")
         return detail
     }
@@ -1180,15 +1186,17 @@ class PlayerViewModelTest {
             // 回归：点击指定分P进入播放器时，详情接口返回的默认分P cid（第一个分P）
             // 不得覆盖传入的 cid，否则播放的不是所选分P
             every { videoInfoRepository.videoDetail } returns MutableStateFlow(fakeVideoDetail(cid = 111L))
-            initSession(aid = 10, cid = 333L)
+            try {
+                initSession(aid = 10, cid = 333L)
+                viewModel.loadVideoDetail(aid = 10)
+                runCurrent()
 
-            viewModel.loadVideoDetail(aid = 10)
-            runCurrent()
-
-            val state = viewModel.uiState.value
-            assertThat(state.cid).isEqualTo(333L)
-            assertThat(state.authorMid).isEqualTo(42L)
-            viewModel.viewModelScope.cancel()
+                val state = viewModel.uiState.value
+                assertThat(state.cid).isEqualTo(333L)
+                assertThat(state.authorMid).isEqualTo(42L)
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
         }
 
     @Test
@@ -1196,13 +1204,15 @@ class PlayerViewModelTest {
         runTest(testDispatcher) {
             // 直进播放器（route.cid = 0）时用详情返回的默认分P补齐
             every { videoInfoRepository.videoDetail } returns MutableStateFlow(fakeVideoDetail(cid = 111L))
-            initSession(aid = 10, cid = 0L)
+            try {
+                initSession(aid = 10, cid = 0L)
+                viewModel.loadVideoDetail(aid = 10)
+                runCurrent()
 
-            viewModel.loadVideoDetail(aid = 10)
-            runCurrent()
-
-            assertThat(viewModel.uiState.value.cid).isEqualTo(111L)
-            viewModel.viewModelScope.cancel()
+                assertThat(viewModel.uiState.value.cid).isEqualTo(111L)
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
         }
 
     @Test
@@ -1340,6 +1350,106 @@ class PlayerViewModelTest {
                     null,
                     dev.frost819.newbv.biliapi.entity.ApiType.Web,
                 )
+            }
+        }
+
+    @Test
+    fun `unknown actions cannot trigger a reverse mutation`() =
+        runTest(testDispatcher) {
+            // Given
+            updateUiState { it.copy(aid = 10, cid = 20) }
+            every { videoInfoRepository.isVideoActionsReady(any()) } returns false
+            // When
+            viewModel.toggleVideoLike()
+            viewModel.toggleVideoFavorite()
+            advanceUntilIdle()
+            // Then
+            coVerify(exactly = 0) { likeRepository.updateVideoLiked(any(), any(), any(), any()) }
+            coVerify(exactly = 0) { favoriteRepository.updateVideoToFavoriteFolder(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun `unresolved current parts do not skip to the next outer video`() =
+        runTest(testDispatcher) {
+            // Given
+            updateUiState { it.copy(aid = 10, cid = 20) }
+            every { videoInfoRepository.videoList } returns
+                MutableStateFlow(
+                    listOf(VideoListItem(10, 20, title = "current"), VideoListItem(11, 21, title = "next")),
+                )
+            coEvery { videoInfoRepository.ensureUgcPages(any(), any()) } returns false
+            // When
+            viewModel.playNextNow()
+            advanceUntilIdle()
+            // Then
+            assertThat(viewModel.uiState.value.aid).isEqualTo(10L)
+            assertThat(viewModel.uiState.value.cid).isEqualTo(20L)
+        }
+
+    @Test
+    fun `late mutation from the first A cannot overwrite a new A playback session`() =
+        runTest(testDispatcher) {
+            // Given
+            updateUiState { it.copy(aid = 10, cid = 20) }
+            every { videoInfoRepository.isVideoActionsReady(any()) } returns true
+            every { videoInfoRepository.videoSharedState } returns
+                MutableStateFlow(
+                    dev.frost819.newbv.app.data
+                        .VideoSharedState(aid = 10, userActionsLoaded = true),
+                )
+            val completion = CompletableDeferred<Unit>()
+            coEvery { likeRepository.updateVideoLiked(any(), any(), any(), any()) } coAnswers { completion.await() }
+            coEvery { videoPlayRepository.getPlayData(any(), any(), any()) } coAnswers { awaitCancellation() }
+            viewModel.toggleVideoLike()
+            runCurrent()
+            // When
+            viewModel.playNewVideo(VideoListItem(11, 21, title = "B"))
+            viewModel.playNewVideo(VideoListItem(10, 20, title = "new A"))
+            completion.complete(Unit)
+            runCurrent()
+            // Then
+            verify(exactly = 0) { videoInfoRepository.updateVideoActionState(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun `new token for the same uid rejects an old mutation completion`() =
+        runTest(testDispatcher) {
+            // Given
+            updateUiState { it.copy(aid = 10, cid = 20) }
+            every { videoInfoRepository.isVideoActionsReady(any()) } returns true
+            val completion = CompletableDeferred<Unit>()
+            coEvery { likeRepository.updateVideoLiked(any(), any(), any(), any()) } coAnswers { completion.await() }
+            viewModel.toggleVideoLike()
+            runCurrent()
+            // When
+            every { Prefs.accessToken } returns "new-session-token"
+            completion.complete(Unit)
+            runCurrent()
+            // Then
+            verify(exactly = 0) { videoInfoRepository.updateVideoActionState(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun `old mutation failure after switching video emits no error on the new video`() =
+        runTest(testDispatcher) {
+            // Given
+            updateUiState { it.copy(aid = 10, cid = 20) }
+            every { videoInfoRepository.isVideoActionsReady(any()) } returns true
+            val completion = CompletableDeferred<Unit>()
+            coEvery { likeRepository.updateVideoLiked(any(), any(), any(), any()) } coAnswers {
+                completion.await()
+                throw java.io.IOException("old request")
+            }
+            coEvery { videoPlayRepository.getPlayData(any(), any(), any()) } coAnswers { awaitCancellation() }
+            viewModel.uiEffect.test {
+                viewModel.toggleVideoLike()
+                runCurrent()
+                // When
+                viewModel.playNewVideo(VideoListItem(11, 21, title = "B"))
+                completion.complete(Unit)
+                runCurrent()
+                // Then
+                expectNoEvents()
             }
         }
 }

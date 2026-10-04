@@ -14,7 +14,9 @@ import dev.frost819.newbv.biliapi.repositories.VideoDetailRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -43,6 +45,8 @@ class VideoInfoRepositoryTest {
         Dispatchers.setMain(testDispatcher)
         io.mockk.mockkObject(dev.frost819.newbv.data.datastore.Prefs)
         io.mockk.every { dev.frost819.newbv.data.datastore.Prefs.uid } returns 1L
+        io.mockk.every { dev.frost819.newbv.data.datastore.Prefs.sessData } returns ""
+        io.mockk.every { dev.frost819.newbv.data.datastore.Prefs.accessToken } returns ""
         videoDetailRepository = mockk()
         coEvery { progress.get(any(), any(), any()) } returns null
         repository = VideoInfoRepository(videoDetailRepository, progress)
@@ -270,7 +274,7 @@ class VideoInfoRepositoryTest {
         }
 
     @Test
-    fun `updateUgcPages does not modify single-page videos`() =
+    fun `updateUgcPages marks single page as loaded without child rows`() =
         runTest(testDispatcher) {
             val items = listOf(VideoListItem(aid = 1, cid = 10, title = "视频1"))
             repository.updateVideoList(items)
@@ -285,7 +289,7 @@ class VideoInfoRepositoryTest {
             repository.updateUgcPages(preferApiType = ApiType.Web)
             advanceUntilIdle()
 
-            assertThat(repository.videoList.value[0].ugcPages).isNull()
+            assertThat(repository.videoList.value[0].ugcPages).isEmpty()
         }
 
     @Test
@@ -442,5 +446,115 @@ class VideoInfoRepositoryTest {
             // Then: keep each episode's complete identity, without fabricated child parts.
             assertThat(repository.videoList.value).containsExactly(first.copy(ugcPages = null), next).inOrder()
             coVerify(exactly = 0) { videoDetailRepository.getUgcPages(any(), any()) }
+        }
+
+    @Test
+    fun `current and neighbors load once without scanning distant videos`() =
+        runTest(testDispatcher) {
+            // Given
+            repository.updateVideoList((1L..10L).map { VideoListItem(aid = it, cid = it * 10, title = "$it") })
+            coEvery { videoDetailRepository.getUgcPages(any(), any()) } returns
+                listOf(
+                    VideoPage(cid = 10, index = 1, title = "P1", duration = 60, dimension = Dimension(1920, 1080)),
+                )
+            // When
+            repository.updateUgcPages(ApiType.Web, currentAid = 5)
+            repository.updateUgcPages(ApiType.Web, currentAid = 5)
+            // Then
+            coVerify(exactly = 3) { videoDetailRepository.getUgcPages(any(), any()) }
+            assertThat(repository.videoList.value[0].ugcPages).isNull()
+            assertThat(repository.videoList.value[4].ugcPages).isEmpty()
+        }
+
+    @Test
+    fun `list replacement rejects in flight part data`() =
+        runTest(testDispatcher) {
+            // Given
+            val result = CompletableDeferred<List<VideoPage>>()
+            repository.updateVideoList(listOf(VideoListItem(1, 10, title = "old")))
+            coEvery { videoDetailRepository.getUgcPages(any(), any()) } coAnswers { result.await() }
+            val request = async { repository.ensureUgcPages(1, ApiType.Web) }
+            runCurrent()
+            // When
+            val replacement = VideoListItem(1, 20, title = "replacement")
+            repository.updateVideoList(listOf(replacement))
+            result.complete(listOf(VideoPage(10, 1, "P1", 60, Dimension(1920, 1080))))
+            // Then
+            assertThat(request.await()).isFalse()
+            assertThat(repository.videoList.value).containsExactly(replacement)
+        }
+
+    @Test
+    fun `partial player detail preserves known actions but new video starts unknown`() =
+        runTest(testDispatcher) {
+            // Given
+            repository.updateVideoDetail(fakeVideoDetail().copy(userActions = UserActions(like = true)))
+            // When
+            repository.updateVideoDetail(fakeVideoDetail(), userActionsLoaded = false)
+            // Then
+            assertThat(repository.videoSharedState.value?.liked).isTrue()
+            assertThat(repository.isVideoActionsReady(1)).isTrue()
+            repository.prepareVideoActions(2)
+            assertThat(repository.isVideoActionsReady(2)).isFalse()
+            assertThat(repository.videoSharedState.value?.userActionsLoaded).isFalse()
+        }
+
+    @Test
+    fun `late action query cannot undo a newer user interaction`() =
+        runTest(testDispatcher) {
+            // Given
+            repository.updateVideoDetail(fakeVideoDetail())
+            val response = CompletableDeferred<UserActions>()
+            coEvery { videoDetailRepository.getVideoUserActions(any(), any()) } coAnswers { response.await() }
+            val query = launch { repository.refreshVideoActions(1, ApiType.Web) }
+            runCurrent()
+            // When
+            repository.beginVideoInteraction(1)
+            repository.updateVideoActionState(1, liked = true)
+            response.complete(UserActions(like = false))
+            query.join()
+            // Then
+            assertThat(repository.videoSharedState.value?.liked).isTrue()
+            assertThat(repository.videoSharedState.value?.userActionsLoading).isFalse()
+        }
+
+    @Test
+    fun `unknown action failure stays disabled and can retry`() =
+        runTest(testDispatcher) {
+            // Given
+            repository.prepareVideoActions(1)
+            coEvery { videoDetailRepository.getVideoUserActions(any(), any()) } throws java.io.IOException("offline")
+            // When
+            repository.refreshVideoActions(1, ApiType.Web)
+            // Then
+            assertThat(repository.isVideoActionsReady(1)).isFalse()
+            assertThat(repository.videoSharedState.value?.userActionsError).isTrue()
+            coEvery { videoDetailRepository.getVideoUserActions(any(), any()) } returns UserActions(like = true)
+            repository.refreshVideoActions(1, ApiType.Web)
+            assertThat(repository.isVideoActionsReady(1)).isTrue()
+            assertThat(repository.videoSharedState.value?.userActionsError).isFalse()
+        }
+
+    @Test
+    fun `late action query failure cannot flag a newer interaction as failed`() =
+        runTest(testDispatcher) {
+            // Given
+            repository.updateVideoDetail(fakeVideoDetail())
+            val response = CompletableDeferred<Unit>()
+            coEvery { videoDetailRepository.getVideoUserActions(any(), any()) } coAnswers {
+                response.await()
+                throw java.io.IOException("old query failed")
+            }
+            val query = launch { repository.refreshVideoActions(1, ApiType.Web) }
+            runCurrent()
+            // When
+            repository.beginVideoInteraction(1)
+            repository.updateVideoActionState(1, liked = true)
+            response.complete(Unit)
+            query.join()
+            // Then
+            assertThat(repository.videoSharedState.value?.liked).isTrue()
+            assertThat(repository.videoSharedState.value?.userActionsError).isFalse()
+            assertThat(repository.videoSharedState.value?.userActionsLoading).isFalse()
         }
 }

@@ -144,6 +144,7 @@ fun MainScreen(
                 when (screen) {
                     LeftNaviItem.Home ->
                         HomeContent(
+                            isActive = screen == selectedDrawerItem,
                             navFocusRequester = homeFocusRequester,
                             navController = navController,
                             focusSaver = focusSaver,
@@ -168,6 +169,7 @@ fun MainScreen(
                     }
                     LeftNaviItem.Personal ->
                         dev.frost819.newbv.app.ui.screen.personal.PersonalContent(
+                            isActive = screen == selectedDrawerItem,
                             navFocusRequester = homeFocusRequester,
                             navController = navController,
                             focusSaver = focusSaver,

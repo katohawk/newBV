@@ -4,6 +4,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.frost819.newbv.app.data.AccountRepositoryImpl
 import dev.frost819.newbv.biliapi.entity.FavoriteFolderData
 import dev.frost819.newbv.biliapi.entity.FavoriteFolderMetadata
 import dev.frost819.newbv.biliapi.entity.FavoriteItem
@@ -17,14 +18,18 @@ import dev.frost819.newbv.biliapi.repositories.HistoryRepository
 import dev.frost819.newbv.biliapi.repositories.SeasonRepository
 import dev.frost819.newbv.biliapi.repositories.ToViewRepository
 import dev.frost819.newbv.core.log.Loggers
+import dev.frost819.newbv.data.datastore.PersonalTopNavItem
 import dev.frost819.newbv.data.datastore.Prefs
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -87,6 +92,8 @@ data class PersonalUiState(
     val followingType: FollowingSeasonType = FollowingSeasonType.Bangumi,
     val followingStatus: FollowingSeasonStatus = FollowingSeasonStatus.All,
     val isLogin: Boolean = false,
+    /** 当前账户 UID；变化时可见页面重新按需加载。 */
+    val currentUid: Long = 0L,
 )
 
 /**
@@ -108,10 +115,12 @@ class PersonalViewModel
         private val historyRepository: HistoryRepository,
         private val favoriteRepository: FavoriteRepository,
         private val seasonRepository: SeasonRepository,
+        private val accountRepository: AccountRepositoryImpl,
     ) : ViewModel() {
         private val logger = Loggers.get("PersonalViewModel")
-
         private val _effect = MutableSharedFlow<PersonalUiEffect>()
+
+        /** 删除稍后再看等操作的一次性提示。 */
         val effect = _effect.asSharedFlow()
 
         private fun prefApiType(): BiliApiType =
@@ -120,373 +129,350 @@ class PersonalViewModel
                 DataApiType.App -> BiliApiType.App
             }
 
-        private val _uiState = MutableStateFlow(PersonalUiState())
+        private val _uiState =
+            MutableStateFlow(
+                PersonalUiState(
+                    isLogin = accountRepository.uiState.value.isLogin,
+                    currentUid = accountRepository.uiState.value.uid,
+                ),
+            )
+
+        /** 当前账户的个人列表及加载状态。 */
         val uiState: StateFlow<PersonalUiState> = _uiState.asStateFlow()
 
+        /** 原地更新的稍后再看列表，删除后保持相邻卡片的焦点。 */
         val toViewItems = mutableStateListOf<ToViewItem>()
 
-        private var historyCursor: Long = 0L
-        private var favoritePageNumber: Int = 1
-        private var followingPageNumber: Int = 1
-        private var followingTotal: Int = 0
+        private val jobs = mutableMapOf<PersonalTopNavItem, Job>()
+        private val generations = PersonalTopNavItem.entries.associateWith { 0 }.toMutableMap()
+        private val loadedTabs = mutableSetOf<PersonalTopNavItem>()
+        private var historyCursor = 0L
+        private var favoritePageNumber = 1
+        private var followingPageNumber = 1
 
         init {
-            _uiState.update { it.copy(isLogin = Prefs.isLogin) }
-            if (Prefs.isLogin) {
-                loadToView()
-                loadHistory()
-                loadFavoriteFolders()
-                loadFollowingSeasons()
-            }
-        }
-
-        // region ToView
-
-        /**
-         * 加载稍后再看列表。
-         *
-         * 稍后再看接口不支持分页，一次性加载全部。
-         */
-        fun loadToView() {
             viewModelScope.launch {
-                if (_uiState.value.toViewLoading) return@launch
-
-                _uiState.update { it.copy(toViewLoading = true, toViewError = false) }
-
-                runCatching {
-                    withTimeout(LOAD_TIMEOUT_MS) {
-                        val data =
-                            toViewRepository.getToView(
-                                cursor = 0,
-                                preferApiType = prefApiType(),
-                            )
-                        toViewItems.clear()
-                        toViewItems.addAll(data.data)
+                accountRepository.uiState
+                    .map { it.uid to it.isLogin }
+                    .distinctUntilChanged()
+                    .collect { (uid, isLogin) ->
+                        val current = _uiState.value
+                        if (uid != current.currentUid || isLogin != current.isLogin) {
+                            PersonalTopNavItem.entries.forEach { invalidate(it) }
+                            _uiState.update { it.copy(currentUid = uid, isLogin = isLogin) }
+                        }
                     }
-                }.onFailure { error ->
-                    if (error is CancellationException && error !is TimeoutCancellationException) {
-                        throw error
-                    }
-                    logger.error(error) { "Failed to load toview" }
-                    _uiState.update { it.copy(toViewError = true) }
-                }
-
-                _uiState.update { it.copy(toViewLoading = false) }
             }
         }
 
         /**
-         * 删除稍后再看项（原地移除，保持焦点不丢失）。
+         * 首次显示当前 Tab 才加载；缓存空结果，失败等待显式重试。
          *
-         * @param aid 视频 AV 号。
+         * @param tab 当前可见的个人页 Tab。
          */
+        fun ensureLoaded(tab: PersonalTopNavItem) {
+            val state = _uiState.value
+            val error =
+                when (tab) {
+                    PersonalTopNavItem.ToView -> state.toViewError
+                    PersonalTopNavItem.History -> state.historyError
+                    PersonalTopNavItem.Favorite -> state.favoriteError
+                    PersonalTopNavItem.FollowingSeason -> state.followingError
+                }
+            if (tab in loadedTabs || error) return
+            when (tab) {
+                PersonalTopNavItem.ToView -> loadToView()
+                PersonalTopNavItem.History -> loadHistory()
+                PersonalTopNavItem.Favorite -> loadFavoriteFolders()
+                PersonalTopNavItem.FollowingSeason -> loadFollowingSeasons()
+            }
+        }
+
+        private fun isCurrent(
+            tab: PersonalTopNavItem,
+            generation: Int,
+        ): Boolean = generations[tab] == generation
+
+        // 每个 Tab 单独取消和递增代次，旧账户/旧筛选的晚响应不能修改新请求状态。
+        private fun load(
+            tab: PersonalTopNavItem,
+            hasMore: Boolean = true,
+            request: suspend (Int) -> Unit,
+        ) {
+            if (!_uiState.value.isLogin || jobs[tab]?.isActive == true || !hasMore) return
+            val generation = generations.getValue(tab)
+            updateLoading(tab, loading = true)
+            jobs[tab] =
+                viewModelScope.launch {
+                    try {
+                        request(generation)
+                        if (isCurrent(tab, generation)) loadedTabs.add(tab)
+                    } catch (error: TimeoutCancellationException) {
+                        recordLoadError(tab, generation, error)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        recordLoadError(tab, generation, error)
+                    } finally {
+                        if (isCurrent(tab, generation)) {
+                            updateLoading(tab, loading = false, error = hasError(tab))
+                        }
+                    }
+                }
+        }
+
+        private fun recordLoadError(
+            tab: PersonalTopNavItem,
+            generation: Int,
+            error: Exception,
+        ) {
+            if (isCurrent(tab, generation)) {
+                logger.error(error) { "Failed to load $tab" }
+                updateLoading(tab, loading = false, error = true)
+            }
+        }
+
+        private fun hasError(tab: PersonalTopNavItem): Boolean =
+            when (tab) {
+                PersonalTopNavItem.ToView -> _uiState.value.toViewError
+                PersonalTopNavItem.History -> _uiState.value.historyError
+                PersonalTopNavItem.Favorite -> _uiState.value.favoriteError
+                PersonalTopNavItem.FollowingSeason -> _uiState.value.followingError
+            }
+
+        private fun updateLoading(
+            tab: PersonalTopNavItem,
+            loading: Boolean,
+            error: Boolean = false,
+        ) {
+            _uiState.update {
+                when (tab) {
+                    PersonalTopNavItem.ToView -> it.copy(toViewLoading = loading, toViewError = error)
+                    PersonalTopNavItem.History -> it.copy(historyLoading = loading, historyError = error)
+                    PersonalTopNavItem.Favorite -> it.copy(favoriteLoading = loading, favoriteError = error)
+                    PersonalTopNavItem.FollowingSeason -> it.copy(followingLoading = loading, followingError = error)
+                }
+            }
+        }
+
+        private fun invalidate(
+            tab: PersonalTopNavItem,
+            keepFolders: Boolean = false,
+        ) {
+            generations[tab] = generations.getValue(tab) + 1
+            jobs.remove(tab)?.cancel()
+            loadedTabs.remove(tab)
+            when (tab) {
+                PersonalTopNavItem.ToView -> {
+                    toViewItems.clear()
+                    _uiState.update { it.copy(toViewLoading = false, toViewError = false) }
+                }
+                PersonalTopNavItem.History -> {
+                    historyCursor = 0L
+                    _uiState.update {
+                        it.copy(
+                            historyItems = emptyList(),
+                            historyLoading = false,
+                            historyHasMore = true,
+                            historyError = false,
+                        )
+                    }
+                }
+                PersonalTopNavItem.Favorite -> {
+                    favoritePageNumber = 1
+                    _uiState.update {
+                        it.copy(
+                            favoriteFolders = if (keepFolders) it.favoriteFolders else emptyList(),
+                            favoriteItems = emptyList(),
+                            favoriteLoading = false,
+                            favoriteHasMore = true,
+                            favoriteError = false,
+                            currentFolderId = -1L,
+                        )
+                    }
+                }
+                PersonalTopNavItem.FollowingSeason -> {
+                    followingPageNumber = 1
+                    _uiState.update {
+                        it.copy(
+                            followingSeasons = emptyList(),
+                            followingLoading = false,
+                            followingHasMore = true,
+                            followingError = false,
+                        )
+                    }
+                }
+            }
+        }
+
+        /** 加载完整稍后再看列表；该接口不提供分页。 */
+        fun loadToView() {
+            load(PersonalTopNavItem.ToView) { generation ->
+                val data =
+                    withTimeout(
+                        LOAD_TIMEOUT_MS,
+                    ) { toViewRepository.getToView(cursor = 0, preferApiType = prefApiType()) }
+                if (!isCurrent(PersonalTopNavItem.ToView, generation)) return@load
+                toViewItems.clear()
+                toViewItems.addAll(data.data)
+            }
+        }
+
+        /** 删除指定视频或全部已看视频，成功后原地更新当前账户列表。 */
         fun delToView(
             aid: Long,
             viewed: Boolean = false,
         ) {
+            if (!_uiState.value.isLogin) return
+            val generation = generations.getValue(PersonalTopNavItem.ToView)
             viewModelScope.launch {
                 runCatching {
-                    toViewRepository.delToView(
-                        aid = aid,
-                        viewed = viewed,
-                        preferApiType = prefApiType(),
-                    )
+                    withTimeout(LOAD_TIMEOUT_MS) {
+                        toViewRepository.delToView(aid = aid, viewed = viewed, preferApiType = prefApiType())
+                    }
+                    if (!isCurrent(PersonalTopNavItem.ToView, generation)) return@launch
                     toViewItems.removeAll { it.oid == aid }
                     _effect.emit(PersonalUiEffect.ShowToast("已移除稍后再看"))
                 }.onFailure { error ->
-                    if (error is CancellationException && error !is TimeoutCancellationException) {
-                        throw error
-                    }
+                    if (error is CancellationException && error !is TimeoutCancellationException) throw error
+                    if (!isCurrent(PersonalTopNavItem.ToView, generation)) return@onFailure
                     logger.error(error) { "Failed to delete toview $aid" }
                     _effect.emit(PersonalUiEffect.ShowToast("移除失败: ${error.message ?: "未知错误"}"))
                 }
             }
         }
 
-        /**
-         * 刷新稍后再看列表。
-         */
+        /** 取消在途请求并刷新稍后再看。 */
         fun refreshToView() {
-            toViewItems.clear()
-            _uiState.update { it.copy(toViewError = false) }
+            invalidate(PersonalTopNavItem.ToView)
             loadToView()
         }
 
-        // endregion
-
-        // region History
-
-        /**
-         * 加载更多历史记录。
-         *
-         * 使用 cursor 分页，首次加载 cursor=0。
-         * 超过 [LOAD_TIMEOUT_MS] 未返回时标记为加载失败。
-         */
+        /** 按 cursor 加载下一页历史；末页后跳过。 */
         fun loadHistory() {
-            viewModelScope.launch {
-                val current = _uiState.value
-                if (current.historyLoading || !current.historyHasMore) return@launch
-
-                _uiState.update { it.copy(historyLoading = true, historyError = false) }
-
-                runCatching {
+            load(PersonalTopNavItem.History, _uiState.value.historyHasMore) { generation ->
+                val data =
                     withTimeout(LOAD_TIMEOUT_MS) {
-                        val data =
-                            historyRepository.getHistories(
-                                cursor = historyCursor,
-                                preferApiType = prefApiType(),
-                            )
-                        historyCursor = data.cursor
-                        _uiState.update {
-                            it.copy(
-                                historyItems = it.historyItems + data.data,
-                                historyHasMore = data.cursor != 0L,
-                            )
-                        }
+                        historyRepository.getHistories(cursor = historyCursor, preferApiType = prefApiType())
                     }
-                }.onFailure { error ->
-                    if (error is CancellationException && error !is TimeoutCancellationException) {
-                        throw error
-                    }
-                    logger.error(error) { "Failed to load history" }
-                    _uiState.update { it.copy(historyError = true) }
+                if (!isCurrent(PersonalTopNavItem.History, generation)) return@load
+                historyCursor = data.cursor
+                _uiState.update {
+                    it.copy(
+                        historyItems = it.historyItems + data.data,
+                        historyHasMore = data.cursor != 0L,
+                    )
                 }
-
-                _uiState.update { it.copy(historyLoading = false) }
             }
         }
 
-        /**
-         * 刷新历史记录。
-         */
+        /** 取消在途请求并从第一页刷新历史。 */
         fun refreshHistory() {
-            historyCursor = 0L
-            _uiState.update {
-                it.copy(historyItems = emptyList(), historyHasMore = true, historyError = false)
-            }
+            invalidate(PersonalTopNavItem.History)
             loadHistory()
         }
 
-        // endregion
-
-        // region Favorite
-
-        /**
-         * 加载收藏夹列表。
-         *
-         * 加载完成后自动加载第一个收藏夹的视频列表。
-         */
+        /** 加载收藏夹目录，并在同一任务内加载首个收藏夹第一页。 */
         fun loadFavoriteFolders() {
-            viewModelScope.launch {
-                if (_uiState.value.favoriteLoading) return@launch
-
-                _uiState.update { it.copy(favoriteLoading = true, favoriteError = false) }
-
-                runCatching {
+            val uid = _uiState.value.currentUid
+            load(PersonalTopNavItem.Favorite) { generation ->
+                val folders =
                     withTimeout(LOAD_TIMEOUT_MS) {
-                        val mid = Prefs.uid
-                        val folders =
-                            favoriteRepository.getAllFavoriteFolderMetadataList(
-                                mid = mid,
-                                preferApiType = prefApiType(),
-                            )
-                        _uiState.update { it.copy(favoriteFolders = folders) }
-                        if (folders.isNotEmpty()) {
-                            val firstFolder = folders.first()
-                            _uiState.update { it.copy(currentFolderId = firstFolder.id) }
-                            loadFavoriteItems(firstFolder.id, forceRefresh = true)
-                        }
+                        favoriteRepository.getAllFavoriteFolderMetadataList(mid = uid, preferApiType = prefApiType())
                     }
-                }.onFailure { error ->
-                    if (error is CancellationException && error !is TimeoutCancellationException) {
-                        throw error
-                    }
-                    logger.error(error) { "Failed to load favorite folders" }
-                    _uiState.update { it.copy(favoriteError = true) }
+                if (!isCurrent(PersonalTopNavItem.Favorite, generation)) return@load
+                _uiState.update { it.copy(favoriteFolders = folders) }
+                folders.firstOrNull()?.let { folder ->
+                    favoritePageNumber = 1
+                    _uiState.update { it.copy(currentFolderId = folder.id) }
+                    loadFavoritePage(folder.id, generation)
                 }
-
-                _uiState.update { it.copy(favoriteLoading = false) }
             }
         }
 
-        /**
-         * 加载收藏夹视频列表。
-         *
-         * @param folderId 收藏夹 ID。
-         * @param forceRefresh 是否强制刷新（切换收藏夹时为 true）。
-         */
+        /** 加载指定收藏夹下一页；切夹或强制刷新先取消原任务。 */
         fun loadFavoriteItems(
             folderId: Long,
             forceRefresh: Boolean = false,
         ) {
-            viewModelScope.launch {
-                val current = _uiState.value
-                if (current.favoriteLoading) return@launch
-
-                if (forceRefresh || folderId != current.currentFolderId) {
-                    favoritePageNumber = 1
-                    _uiState.update {
-                        it.copy(
-                            favoriteItems = emptyList(),
-                            favoriteHasMore = true,
-                            favoriteError = false,
-                            currentFolderId = folderId,
-                        )
-                    }
-                }
-
-                if (!current.favoriteHasMore && !forceRefresh) return@launch
-
-                _uiState.update { it.copy(favoriteLoading = true, favoriteError = false) }
-
-                runCatching {
-                    withTimeout(LOAD_TIMEOUT_MS) {
-                        val data: FavoriteFolderData =
-                            favoriteRepository.getFavoriteFolderData(
-                                mediaId = folderId,
-                                pageNumber = favoritePageNumber,
-                                preferApiType = prefApiType(),
-                            )
-                        favoritePageNumber++
-                        val videoItems =
-                            data.medias.filter {
-                                it.type ==
-                                    dev.frost819.newbv.biliapi.entity.FavoriteItemType.Video
-                            }
-                        _uiState.update {
-                            it.copy(
-                                favoriteItems = it.favoriteItems + videoItems,
-                                favoriteHasMore = data.hasMore,
-                            )
-                        }
-                    }
-                }.onFailure { error ->
-                    if (error is CancellationException && error !is TimeoutCancellationException) {
-                        throw error
-                    }
-                    logger.error(error) { "Failed to load favorite items for folder $folderId" }
-                    _uiState.update { it.copy(favoriteError = true) }
-                }
-
-                _uiState.update { it.copy(favoriteLoading = false) }
+            if (forceRefresh || folderId != _uiState.value.currentFolderId) {
+                invalidate(PersonalTopNavItem.Favorite, keepFolders = true)
+                _uiState.update { it.copy(currentFolderId = folderId) }
+            }
+            load(PersonalTopNavItem.Favorite, _uiState.value.favoriteHasMore) { generation ->
+                loadFavoritePage(folderId, generation)
             }
         }
 
-        /**
-         * 刷新收藏夹列表。
-         */
+        private suspend fun loadFavoritePage(
+            folderId: Long,
+            generation: Int,
+        ) {
+            val data: FavoriteFolderData =
+                withTimeout(LOAD_TIMEOUT_MS) {
+                    favoriteRepository.getFavoriteFolderData(
+                        mediaId = folderId,
+                        pageNumber = favoritePageNumber,
+                        preferApiType = prefApiType(),
+                    )
+                }
+            if (!isCurrent(PersonalTopNavItem.Favorite, generation)) return
+            favoritePageNumber++
+            val videos = data.medias.filter { it.type == dev.frost819.newbv.biliapi.entity.FavoriteItemType.Video }
+            _uiState.update { it.copy(favoriteItems = it.favoriteItems + videos, favoriteHasMore = data.hasMore) }
+        }
+
+        /** 刷新收藏目录及首个收藏夹。 */
         fun refreshFavorite() {
-            _uiState.update {
-                it.copy(
-                    favoriteFolders = emptyList(),
-                    favoriteItems = emptyList(),
-                    favoriteHasMore = true,
-                    favoriteError = false,
-                    currentFolderId = -1L,
-                )
-            }
+            invalidate(PersonalTopNavItem.Favorite)
             loadFavoriteFolders()
         }
 
-        // endregion
-
-        // region FollowingSeason
-
-        /**
-         * 加载更多追番列表。
-         *
-         * 使用页码分页，每页 30 条。
-         */
+        /** 按当前类型和观看状态加载下一页追番。 */
         fun loadFollowingSeasons() {
-            viewModelScope.launch {
-                val current = _uiState.value
-                if (current.followingLoading || !current.followingHasMore) return@launch
-
-                _uiState.update { it.copy(followingLoading = true, followingError = false) }
-
-                runCatching {
+            val current = _uiState.value
+            load(PersonalTopNavItem.FollowingSeason, current.followingHasMore) { generation ->
+                val data =
                     withTimeout(LOAD_TIMEOUT_MS) {
-                        val data =
-                            seasonRepository.getFollowingSeasons(
-                                type = current.followingType,
-                                status = current.followingStatus,
-                                pageNumber = followingPageNumber,
-                                preferApiType = prefApiType(),
-                            )
-                        followingPageNumber++
-                        followingTotal = data.total
-                        _uiState.update {
-                            it.copy(
-                                followingSeasons = it.followingSeasons + data.list,
-                                followingHasMore = it.followingSeasons.size + data.list.size < followingTotal,
-                            )
-                        }
+                        seasonRepository.getFollowingSeasons(
+                            type = current.followingType,
+                            status = current.followingStatus,
+                            pageNumber = followingPageNumber,
+                            preferApiType = prefApiType(),
+                        )
                     }
-                }.onFailure { error ->
-                    if (error is CancellationException && error !is TimeoutCancellationException) {
-                        throw error
-                    }
-                    logger.error(error) { "Failed to load following seasons" }
-                    _uiState.update { it.copy(followingError = true) }
+                if (!isCurrent(PersonalTopNavItem.FollowingSeason, generation)) return@load
+                followingPageNumber++
+                _uiState.update {
+                    val items = it.followingSeasons + data.list
+                    it.copy(followingSeasons = items, followingHasMore = items.size < data.total)
                 }
-
-                _uiState.update { it.copy(followingLoading = false) }
             }
         }
 
-        /**
-         * 设置追番筛选条件并重新加载。
-         *
-         * @param type 类型（Bangumi/Cinema）。
-         * @param status 状态（All/Want/Watching/Watched）。
-         */
+        /** 取消旧筛选请求，并加载新类型/观看状态的第一页。 */
         fun setFollowingFilter(
             type: FollowingSeasonType,
             status: FollowingSeasonStatus,
         ) {
-            followingPageNumber = 1
-            followingTotal = 0
-            _uiState.update {
-                it.copy(
-                    followingType = type,
-                    followingStatus = status,
-                    followingSeasons = emptyList(),
-                    followingHasMore = true,
-                    followingError = false,
-                )
-            }
+            invalidate(PersonalTopNavItem.FollowingSeason)
+            _uiState.update { it.copy(followingType = type, followingStatus = status) }
             loadFollowingSeasons()
         }
 
-        /**
-         * 刷新追番列表。
-         */
+        /** 刷新当前筛选的追番第一页。 */
         fun refreshFollowingSeasons() {
-            followingPageNumber = 1
-            followingTotal = 0
-            _uiState.update {
-                it.copy(
-                    followingSeasons = emptyList(),
-                    followingHasMore = true,
-                    followingError = false,
-                )
-            }
+            invalidate(PersonalTopNavItem.FollowingSeason)
             loadFollowingSeasons()
         }
 
-        // endregion
-
-        /**
-         * 刷新指定 Tab 的数据。
-         *
-         * @param tab 目标 Tab。
-         */
-        fun refresh(tab: dev.frost819.newbv.data.datastore.PersonalTopNavItem) {
+        /** 刷新指定可见 Tab。 */
+        fun refresh(tab: PersonalTopNavItem) {
             when (tab) {
-                dev.frost819.newbv.data.datastore.PersonalTopNavItem.ToView -> refreshToView()
-                dev.frost819.newbv.data.datastore.PersonalTopNavItem.History -> refreshHistory()
-                dev.frost819.newbv.data.datastore.PersonalTopNavItem.Favorite -> refreshFavorite()
-                dev.frost819.newbv.data.datastore.PersonalTopNavItem.FollowingSeason -> refreshFollowingSeasons()
+                PersonalTopNavItem.ToView -> refreshToView()
+                PersonalTopNavItem.History -> refreshHistory()
+                PersonalTopNavItem.Favorite -> refreshFavorite()
+                PersonalTopNavItem.FollowingSeason -> refreshFollowingSeasons()
             }
         }
     }

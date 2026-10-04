@@ -10,8 +10,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -31,18 +35,67 @@ import dev.frost819.newbv.app.util.formatHourMinSec
 import dev.frost819.newbv.app.util.toWanString
 import dev.frost819.newbv.app.viewmodel.common.CollectWatchLaterEffects
 import dev.frost819.newbv.app.viewmodel.common.WatchLaterViewModel
+import dev.frost819.newbv.app.viewmodel.home.HomeUiState
 import dev.frost819.newbv.app.viewmodel.home.HomeViewModel
 import dev.frost819.newbv.app.viewmodel.quickentry.QuickEntryUiEffect
 import dev.frost819.newbv.app.viewmodel.quickentry.QuickEntryViewModel
+import dev.frost819.newbv.data.quickentry.QuickFeedItem
 import dev.frost819.newbv.data.quickentry.mergeQuickEntries
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+
+/** 同一推荐保持原始下标，避免收藏插入或置顶改变卡片身份；重复视频仍有独立 key。 */
+internal fun recommendItemKey(
+    item: QuickFeedItem,
+    state: HomeUiState,
+): String =
+    item.favorite?.let { "rcmd_favorite_${it.key}" }
+        ?: "rcmd_video_${state.recommendItems[item.recommendationIndex].aid}_${item.recommendationIndex}"
+
+/** 冷启动默认聚焦合并后的第一张卡片，收藏优先。 */
+internal fun firstRecommendItemKey(state: HomeUiState): String? =
+    state.quickEntries.firstOrNull { it.isValid }?.let { "rcmd_favorite_${it.key}" }
+        ?: state.recommendItems.firstOrNull()?.let { "rcmd_video_${it.aid}_0" }
+
+/** 按合并流的实际末尾预取；错误和末页不会因滚动自动重试。 */
+internal fun shouldLoadRecommendPage(
+    lastVisibleIndex: Int?,
+    feedSize: Int,
+    state: HomeUiState,
+): Boolean =
+    lastVisibleIndex != null &&
+        state.recommendItems.isNotEmpty() &&
+        state.recommendHasMore &&
+        !state.recommendLoading &&
+        !state.recommendError &&
+        lastVisibleIndex >= feedSize - 20
+
+/** 返回收藏操作完成后的目标位置；null 表示仓库尚未确认，-1 表示列表为空。 */
+internal fun favoriteFocusTargetIndex(
+    keys: List<String>,
+    key: String,
+    oldIndex: Int,
+    removed: Boolean,
+): Int? =
+    if (removed) {
+        if (key in keys) null else oldIndex.coerceAtMost(keys.lastIndex)
+    } else {
+        if (keys.firstOrNull() == key) 0 else null
+    }
+
+private data class FavoriteFocusChange(
+    val key: String,
+    val index: Int,
+    val removed: Boolean,
+)
 
 /**
  * 推荐视频列表页。
  *
  * 4 列网格 + 无限滚动，距离底部 20 条时触发加载更多。
  * 支持从详情页返回后恢复焦点到之前点击的卡片。
+ *
+ * @param onFocusTopNav 删除最后一张卡片后将焦点退回顶部导航。
  */
 @Composable
 fun RecommendScreen(
@@ -50,6 +103,7 @@ fun RecommendScreen(
     viewModel: HomeViewModel,
     navController: NavController,
     focusSaver: FocusSaver,
+    onFocusTopNav: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsState()
     val gridState = rememberLazyGridState()
@@ -73,17 +127,40 @@ fun RecommendScreen(
             )
         }
 
+    val feedKeys = remember(feed, state.recommendItems) { feed.map { recommendItemKey(it, state) } }
+    val latestFeed by rememberUpdatedState(feed)
+    var pendingFocus by remember { mutableStateOf<FavoriteFocusChange?>(null) }
+
     LaunchedEffect(gridState) {
         snapshotFlow {
-            gridState.layoutInfo.visibleItemsInfo
-                .lastOrNull()
-                ?.index
-        }.distinctUntilChanged()
-            .filter { index ->
-                index != null && index >= state.recommendItems.size - 20
-            }.collect {
-                viewModel.loadRecommend()
-            }
+            shouldLoadRecommendPage(
+                lastVisibleIndex =
+                    gridState.layoutInfo.visibleItemsInfo
+                        .lastOrNull()
+                        ?.index,
+                feedSize = latestFeed.size,
+                state = state,
+            )
+        }.distinctUntilChanged().filter { it }.collect { viewModel.loadRecommend() }
+    }
+
+    // 等仓库确认重排/删除后才请求焦点；离屏目标先滚动使 Lazy item 挂载。
+    LaunchedEffect(feedKeys, pendingFocus) {
+        val change = pendingFocus ?: return@LaunchedEffect
+        val targetIndex =
+            favoriteFocusTargetIndex(feedKeys, change.key, change.index, change.removed)
+                ?: return@LaunchedEffect
+        val key = feedKeys.getOrNull(targetIndex)
+        if (key == null) {
+            focusSaver.clearFocusedKey()
+            onFocusTopNav()
+        } else {
+            gridState.scrollToItem(targetIndex)
+            withFrameNanos { }
+            focusSaver.saveFocusedKey(key)
+            runCatching { focusSaver.focusRequesterFor(key).requestFocus() }
+        }
+        pendingFocus = null
     }
 
     TvLazyVerticalGrid(
@@ -96,15 +173,17 @@ fun RecommendScreen(
     ) {
         itemsIndexed(
             items = feed,
-            key = { index, _ -> index },
+            key = { index, _ -> feedKeys[index] },
         ) { index, feedItem ->
             val favorite = feedItem.favorite
             if (favorite != null) {
                 QuickEntryCard(
                     entry = favorite,
                     navController = navController,
-                    modifier = Modifier.focusSaverItem(focusSaver, "rcmd_favorite_${favorite.key}"),
+                    modifier = Modifier.focusSaverItem(focusSaver, feedKeys[index]),
                     viewModel = quickEntryViewModel,
+                    onPinRequested = { pendingFocus = FavoriteFocusChange(feedKeys[index], 0, removed = false) },
+                    onRemoveRequested = { pendingFocus = FavoriteFocusChange(feedKeys[index], index, removed = true) },
                 )
             } else {
                 val item = state.recommendItems[feedItem.recommendationIndex]
@@ -124,7 +203,7 @@ fun RecommendScreen(
                         )
                     }
                 SmallVideoCard(
-                    modifier = Modifier.focusSaverItem(focusSaver, "rcmd_$index"),
+                    modifier = Modifier.focusSaverItem(focusSaver, feedKeys[index]),
                     data = cardData,
                     onClick = {
                         navController.navigateFromVideoCard(cardData)

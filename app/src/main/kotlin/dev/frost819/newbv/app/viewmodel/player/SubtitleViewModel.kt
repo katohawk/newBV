@@ -14,11 +14,18 @@ import dev.frost819.newbv.data.datastore.Prefs
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 import dev.frost819.newbv.data.datastore.ApiType as DataApiType
 
@@ -38,6 +45,10 @@ class SubtitleViewModel
         private val httpClient: HttpClient,
     ) : ViewModel() {
         private val logger = Loggers.get("SubtitleViewModel")
+        private var listJob: Job? = null
+        private var trackJob: Job? = null
+        private var generation = 0L
+        private var trackGeneration = 0L
 
         private val _subtitleState =
             MutableStateFlow(
@@ -69,17 +80,28 @@ class SubtitleViewModel
             aid: Long,
             cid: Long,
         ) {
-            viewModelScope.launch(Dispatchers.IO) {
-                runCatching {
-                    val apiType = if (Prefs.apiType == DataApiType.App) ApiType.App else ApiType.Web
-                    videoPlayRepository.getSubtitle(aid = aid, cid = cid, preferApiType = apiType)
-                }.onSuccess { list ->
-                    _subtitleList.update { list }
-                    logger.info { "Update subtitle size: ${list.size}" }
-                }.onFailure { e ->
-                    logger.warn { "Update subtitle failed: $e" }
+            clearSubtitle()
+            val expectedGeneration = generation
+            listJob =
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        val apiType = if (Prefs.apiType == DataApiType.App) ApiType.App else ApiType.Web
+                        withTimeout(10_000L) {
+                            videoPlayRepository.getSubtitle(aid = aid, cid = cid, preferApiType = apiType)
+                        }
+                    }.onSuccess { list ->
+                        withContext(Dispatchers.Main.immediate) {
+                            currentCoroutineContext().ensureActive()
+                            if (generation != expectedGeneration) return@withContext
+                            // 清空与发布共用 Main，切集不能插在校验和写入之间。
+                            _subtitleList.update { list }
+                            logger.info { "Update subtitle size: ${list.size}" }
+                        }
+                    }.onFailure { e ->
+                        if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                        logger.warn { "Update subtitle failed: $e" }
+                    }
                 }
-            }
         }
 
         /**
@@ -88,6 +110,10 @@ class SubtitleViewModel
          * 调用后应接着 [loadSubtitleList] 加载新视频的字幕。
          */
         fun clearSubtitle() {
+            generation++
+            trackGeneration++
+            listJob?.cancel()
+            trackJob?.cancel()
             _subtitleList.update { emptyList() }
             _subtitleId.update { -1L }
             _subtitleData.update { emptyList() }
@@ -99,24 +125,33 @@ class SubtitleViewModel
          * @param id 字幕 ID，-1 表示关闭字幕
          */
         fun selectSubtitle(id: Long) {
+            trackJob?.cancel()
+            val expectedGeneration = generation
+            val expectedTrack = ++trackGeneration
             if (id == -1L) {
                 _subtitleId.update { -1L }
                 _subtitleData.update { emptyList() }
                 return
             }
 
-            viewModelScope.launch(Dispatchers.IO) {
-                runCatching {
-                    val subtitle = _subtitleList.value.find { it.id == id } ?: return@runCatching
-                    logger.info { "Subtitle url: ${subtitle.url}" }
-                    val responseText = httpClient.get(subtitle.url).bodyAsText()
-                    val data = SubtitleParser.fromBccString(responseText)
-                    _subtitleId.update { id }
-                    _subtitleData.update { data }
-                }.onFailure { e ->
-                    logger.warn { "Load subtitle failed: $e" }
+            trackJob =
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        val subtitle = _subtitleList.value.find { it.id == id } ?: return@runCatching
+                        logger.info { "Subtitle url: ${subtitle.url}" }
+                        val responseText = withTimeout(10_000L) { httpClient.get(subtitle.url).bodyAsText() }
+                        val data = SubtitleParser.fromBccString(responseText)
+                        withContext(Dispatchers.Main.immediate) {
+                            currentCoroutineContext().ensureActive()
+                            if (generation != expectedGeneration || trackGeneration != expectedTrack) return@withContext
+                            _subtitleId.update { id }
+                            _subtitleData.update { data }
+                        }
+                    }.onFailure { e ->
+                        if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                        logger.warn { "Load subtitle failed: $e" }
+                    }
                 }
-            }
         }
 
         /** 切换字幕开关。 */

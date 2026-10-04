@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,9 +25,12 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import dev.frost819.newbv.app.util.SpriteFrame
 import dev.frost819.newbv.app.util.VideoShotImageCache
-import dev.frost819.newbv.app.util.getSpriteFrame
+import dev.frost819.newbv.app.util.spriteFrame
+import dev.frost819.newbv.app.util.spriteIndex
 import dev.frost819.newbv.biliapi.entity.video.VideoShot
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
@@ -51,14 +55,38 @@ fun VideoShot(
     duration: Long,
     coercedOffset: Dp = 0.dp,
 ) {
-    var spriteFrame by remember { mutableStateOf<SpriteFrame?>(null) }
+    val seconds = (position / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    val sheetIndex = videoShot.spriteIndex(seconds)
+    var sheet by remember(videoShot, sheetIndex) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    val spriteFrame = sheet?.let { videoShot.spriteFrame(seconds, it) }
+
+    DisposableEffect(imageCache) { onDispose { imageCache.clear() } }
+    LaunchedEffect(videoShot, sheetIndex) {
+        val index = sheetIndex ?: return@LaunchedEffect
+        delay(16)
+        imageCache.retainWindow(index)
+        try {
+            sheet = imageCache.getOrLoadImage(index, videoShot.imageUrls[index])
+            // 当前预览先就绪，最多预取下一张；取消会随预览关闭或远距离拖动传播。
+            videoShot.imageUrls.getOrNull(index + 1)?.let { url ->
+                launch {
+                    try {
+                        imageCache.getOrLoadImage(index + 1, url)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        // 预取失败不影响当前预览，实际拖到该位置时重新请求。
+                    }
+                }
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            sheet = null
+        }
+    }
 
     Box(modifier = modifier.fillMaxWidth()) {
-        LaunchedEffect(position) {
-            delay(16)
-            spriteFrame = videoShot.getSpriteFrame(position.toInt() / 1000, imageCache)
-        }
-
         spriteFrame?.let { frame ->
             VideoShotImage(
                 modifier =
@@ -145,7 +173,7 @@ private fun VideoShotPreview() {
                     imageCountY = 0,
                     imageWidth = 0,
                     imageHeight = 0,
-                    images = emptyList(),
+                    imageUrls = emptyList(),
                 ),
             imageCache = VideoShotImageCache(),
             position = 234_000L,

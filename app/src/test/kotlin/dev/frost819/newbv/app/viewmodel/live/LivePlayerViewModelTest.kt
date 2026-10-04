@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.MutableState
 import androidx.lifecycle.viewModelScope
 import com.google.common.truth.Truth.assertThat
+import com.kuaishou.akdanmaku.ui.DanmakuPlayer
 import dev.frost819.newbv.biliapi.repositories.LivePlayInfo
 import dev.frost819.newbv.biliapi.repositories.LivePlayLine
 import dev.frost819.newbv.biliapi.repositories.LiveRepository
@@ -58,6 +59,40 @@ class LivePlayerViewModelTest {
     fun tearDown() {
         runCatching { viewModel.viewModelScope.cancel() }
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `live danmaku drops hidden messages and retains a finite time window`() {
+        // Given
+        val danmaku = mockk<DanmakuPlayer>(relaxed = true)
+        val prepare =
+            LivePlayerViewModel::class.java
+                .getDeclaredMethod(
+                    "activeDanmakuPosition",
+                    DanmakuPlayer::class.java,
+                ).apply {
+                    isAccessible = true
+                }
+        updateUiState { it.copy(playerState = LivePlayerState.Playing, isBuffering = false) }
+        every { danmaku.isRenderingEnabled } returns false
+
+        // When
+        assertThat(prepare.invoke(viewModel, danmaku)).isNull()
+        every { danmaku.isRenderingEnabled } returns true
+        updateUiState { it.copy(playerState = LivePlayerState.Paused) }
+        assertThat(prepare.invoke(viewModel, danmaku)).isNull()
+
+        // Then
+        verify(exactly = 0) { danmaku.getCurrentTimeMs() }
+        updateUiState { it.copy(playerState = LivePlayerState.Playing) }
+        every { danmaku.getCurrentTimeMs() } returns 5_000L
+        assertThat(prepare.invoke(viewModel, danmaku)).isEqualTo(5_000L)
+
+        every { danmaku.getCurrentTimeMs() } returns 22_000L
+        every { danmaku.getConfig() } returns null
+        assertThat(prepare.invoke(viewModel, danmaku)).isEqualTo(22_000L)
+        assertThat(prepare.invoke(viewModel, danmaku)).isEqualTo(22_000L)
+        verify(exactly = 1) { danmaku.retainData(11_000L, Long.MAX_VALUE) }
     }
 
     @Test

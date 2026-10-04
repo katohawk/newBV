@@ -126,13 +126,14 @@ class VideoDetailViewModel
                 videoInfoRepository.videoSharedState
                     .collect { state ->
                         val matched = state?.takeIf { it.aid == aid }
+                        val actions = matched?.takeIf { it.userActionsLoaded }
                         _uiState.update {
                             it.copy(
-                                isLiked = matched?.liked ?: it.isLiked,
-                                isCoined = matched?.coined ?: it.isCoined,
-                                isFavorite = matched?.favorited ?: it.isFavorite,
-                                historyLastPlayedCid = state?.lastPlayedCid ?: it.historyLastPlayedCid,
-                                historyLastPlayedTime = state?.lastPlayedTime ?: it.historyLastPlayedTime,
+                                isLiked = actions?.liked ?: it.isLiked,
+                                isCoined = actions?.coined ?: it.isCoined,
+                                isFavorite = actions?.favorited ?: it.isFavorite,
+                                historyLastPlayedCid = matched?.lastPlayedCid ?: it.historyLastPlayedCid,
+                                historyLastPlayedTime = matched?.lastPlayedTime ?: it.historyLastPlayedTime,
                             )
                         }
                     }

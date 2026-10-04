@@ -1,6 +1,7 @@
 package com.kuaishou.akdanmaku.ui
 
 import android.graphics.Color
+import android.os.Handler
 import com.google.common.truth.Truth.assertThat
 import com.kuaishou.akdanmaku.data.DanmakuItemData
 import com.kuaishou.akdanmaku.render.SimpleRenderer
@@ -8,6 +9,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.LooperMode
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * [DanmakuPlayer.clearData] 的 Robolectric 测试。
@@ -17,6 +21,7 @@ import org.robolectric.annotation.Config
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@LooperMode(LooperMode.Mode.PAUSED)
 class DanmakuPlayerClearDataTest {
     /** 构造一条滚动弹幕数据。 */
     private fun item(
@@ -41,6 +46,7 @@ class DanmakuPlayerClearDataTest {
 
         // 清空后实体全部移除
         player.clearData()
+        awaitActionQueue(player)
         player.engine.preAct()
         assertThat(player.engine.entities.size()).isEqualTo(0)
 
@@ -50,12 +56,14 @@ class DanmakuPlayerClearDataTest {
         assertThat(player.engine.entities.size()).isEqualTo(1)
 
         player.release()
+        awaitActionThreadRelease(player)
     }
 
     @Test
     fun `clearData on fresh player keeps engine usable`() {
         val player = DanmakuPlayer(SimpleRenderer())
         player.clearData()
+        awaitActionQueue(player)
         player.engine.preAct()
 
         player.updateData(listOf(item(2, 500)))
@@ -63,5 +71,22 @@ class DanmakuPlayerClearDataTest {
         assertThat(player.engine.entities.size()).isEqualTo(1)
 
         player.release()
+        awaitActionThreadRelease(player)
+    }
+
+    private fun awaitActionQueue(player: DanmakuPlayer) {
+        // ECS 清理已改为异步串行，手动 preAct 前先等其计算队列完成。
+        val getter = DanmakuPlayer::class.java.getDeclaredMethod("getActionHandler").apply { isAccessible = true }
+        val handler = getter.invoke(player) as Handler
+        val completed = CountDownLatch(1)
+        handler.post { completed.countDown() }
+        assertThat(completed.await(5, TimeUnit.SECONDS)).isTrue()
+    }
+
+    private fun awaitActionThreadRelease(player: DanmakuPlayer) {
+        val getter = DanmakuPlayer::class.java.getDeclaredMethod("getActionThread").apply { isAccessible = true }
+        val thread = getter.invoke(player) as Thread
+        thread.join(5_000)
+        assertThat(thread.isAlive).isFalse()
     }
 }

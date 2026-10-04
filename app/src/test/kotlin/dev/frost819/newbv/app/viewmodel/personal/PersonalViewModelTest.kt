@@ -4,6 +4,8 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import com.google.common.truth.Truth.assertThat
+import dev.frost819.newbv.app.data.AccountRepositoryImpl
+import dev.frost819.newbv.app.data.AccountUiState
 import dev.frost819.newbv.biliapi.entity.FavoriteFolderData
 import dev.frost819.newbv.biliapi.entity.FavoriteFolderMetadata
 import dev.frost819.newbv.biliapi.entity.FavoriteItem
@@ -23,18 +25,25 @@ import dev.frost819.newbv.biliapi.repositories.FavoriteRepository
 import dev.frost819.newbv.biliapi.repositories.HistoryRepository
 import dev.frost819.newbv.biliapi.repositories.SeasonRepository
 import dev.frost819.newbv.biliapi.repositories.ToViewRepository
+import dev.frost819.newbv.data.datastore.PersonalTopNavItem
 import dev.frost819.newbv.data.datastore.Prefs
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
@@ -99,14 +108,22 @@ class PersonalViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun createViewModel(): PersonalViewModel {
+    private fun createViewModel(
+        autoLoad: Boolean = true,
+        accounts: MutableStateFlow<AccountUiState> =
+            MutableStateFlow(AccountUiState(isLogin = Prefs.isLogin, uid = Prefs.uid)),
+    ): PersonalViewModel {
+        val accountRepo: AccountRepositoryImpl = mockk()
+        every { accountRepo.uiState } returns accounts
         viewModel =
             PersonalViewModel(
                 toViewRepository = toViewRepo,
                 historyRepository = historyRepo,
                 favoriteRepository = favoriteRepo,
                 seasonRepository = seasonRepo,
+                accountRepository = accountRepo,
             )
+        if (autoLoad) PersonalTopNavItem.entries.forEach { viewModel.ensureLoaded(it) }
         return viewModel
     }
 
@@ -784,5 +801,160 @@ class PersonalViewModelTest {
             advanceUntilIdle()
 
             coVerify(exactly = 2) { toViewRepo.getToView(any(), any()) }
+        }
+
+    @Test
+    fun `logged in construction starts no list requests`() =
+        runTest(testDispatcher) {
+            // Given / When
+            createViewModel(autoLoad = false)
+            advanceUntilIdle()
+
+            // Then
+            coVerify(exactly = 0) { toViewRepo.getToView(any(), any()) }
+            coVerify(exactly = 0) { historyRepo.getHistories(any(), any()) }
+            coVerify(exactly = 0) { favoriteRepo.getAllFavoriteFolderMetadataList(any(), any(), any(), any()) }
+            coVerify(exactly = 0) { seasonRepo.getFollowingSeasons(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun `first visible empty history is cached without loading other tabs`() =
+        runTest(testDispatcher) {
+            // Given
+            coEvery { historyRepo.getHistories(any(), any()) } returns fakeHistoryData(emptyList(), cursor = 0)
+            val vm = createViewModel(autoLoad = false)
+
+            // When
+            vm.ensureLoaded(PersonalTopNavItem.History)
+            advanceUntilIdle()
+            vm.ensureLoaded(PersonalTopNavItem.History)
+            advanceUntilIdle()
+
+            // Then
+            coVerify(exactly = 1) { historyRepo.getHistories(any(), any()) }
+            coVerify(exactly = 0) { toViewRepo.getToView(any(), any()) }
+            assertThat(vm.uiState.value.historyHasMore).isFalse()
+        }
+
+    @Test
+    fun `favorite initial load includes first folder page in one task`() =
+        runTest(testDispatcher) {
+            // Given
+            coEvery { favoriteRepo.getAllFavoriteFolderMetadataList(any(), any(), any(), any()) } returns
+                listOf(fakeFolder(7))
+            coEvery { favoriteRepo.getFavoriteFolderData(any(), any(), any(), any()) } returns
+                fakeFavoriteFolderData(listOf(fakeFavoriteItem(70)), hasMore = false)
+            val vm = createViewModel(autoLoad = false)
+
+            // When
+            vm.ensureLoaded(PersonalTopNavItem.Favorite)
+            advanceUntilIdle()
+            vm.ensureLoaded(PersonalTopNavItem.Favorite)
+            advanceUntilIdle()
+
+            // Then
+            coVerify(exactly = 1) {
+                favoriteRepo.getFavoriteFolderData(mediaId = 7, pageSize = 20, pageNumber = 1, preferApiType = any())
+            }
+            assertThat(
+                vm.uiState.value.favoriteItems
+                    .map { it.id },
+            ).containsExactly(70L)
+            assertThat(vm.uiState.value.favoriteLoading).isFalse()
+        }
+
+    @Test
+    fun `refresh history cancels old generation while a request is pending`() =
+        runTest(testDispatcher) {
+            // Given
+            val pending = CompletableDeferred<HistoryData>()
+            var first = true
+            coEvery { historyRepo.getHistories(any(), any()) } coAnswers {
+                if (first) {
+                    first = false
+                    withContext(NonCancellable) { pending.await() }
+                } else {
+                    fakeHistoryData(listOf(fakeHistoryItem(20)), cursor = 0)
+                }
+            }
+            val vm = createViewModel(autoLoad = false)
+            vm.ensureLoaded(PersonalTopNavItem.History)
+            runCurrent()
+
+            // When
+            vm.refreshHistory()
+            runCurrent()
+            pending.complete(fakeHistoryData(listOf(fakeHistoryItem(10)), cursor = 100))
+            advanceUntilIdle()
+
+            // Then
+            assertThat(
+                vm.uiState.value.historyItems
+                    .map { it.oid },
+            ).containsExactly(20L)
+            assertThat(vm.uiState.value.historyHasMore).isFalse()
+            assertThat(vm.uiState.value.historyLoading).isFalse()
+            coVerify(exactly = 2) { historyRepo.getHistories(0, any()) }
+        }
+
+    @Test
+    fun `changing following filter discards late results from previous filter`() =
+        runTest(testDispatcher) {
+            // Given
+            val pending = CompletableDeferred<FollowingSeasonData>()
+            coEvery { seasonRepo.getFollowingSeasons(any(), any(), any(), any(), any()) } coAnswers {
+                if (firstArg<FollowingSeasonType>() == FollowingSeasonType.Bangumi) {
+                    withContext(NonCancellable) { pending.await() }
+                } else {
+                    fakeFollowingSeasonData(listOf(fakeFollowingSeason(20)), total = 1)
+                }
+            }
+            val vm = createViewModel(autoLoad = false)
+            vm.ensureLoaded(PersonalTopNavItem.FollowingSeason)
+            runCurrent()
+
+            // When
+            vm.setFollowingFilter(FollowingSeasonType.Cinema, FollowingSeasonStatus.Watching)
+            runCurrent()
+            pending.complete(fakeFollowingSeasonData(listOf(fakeFollowingSeason(10)), total = 100))
+            advanceUntilIdle()
+
+            // Then
+            assertThat(
+                vm.uiState.value.followingSeasons
+                    .map { it.seasonId },
+            ).containsExactly(20)
+            assertThat(vm.uiState.value.followingHasMore).isFalse()
+            assertThat(vm.uiState.value.followingType).isEqualTo(FollowingSeasonType.Cinema)
+        }
+
+    @Test
+    fun `switching account clears personal data and waits for visible tab`() =
+        runTest(testDispatcher) {
+            // Given
+            val accounts = MutableStateFlow(AccountUiState(isLogin = true, uid = 1))
+            coEvery { historyRepo.getHistories(any(), any()) } returns
+                fakeHistoryData(listOf(fakeHistoryItem(1)), cursor = 100)
+            val vm = createViewModel(autoLoad = false, accounts = accounts)
+            vm.ensureLoaded(PersonalTopNavItem.History)
+            advanceUntilIdle()
+
+            // When
+            accounts.value = AccountUiState(isLogin = true, uid = 2)
+            advanceUntilIdle()
+
+            // Then
+            assertThat(vm.uiState.value.historyItems).isEmpty()
+            assertThat(vm.uiState.value.currentUid).isEqualTo(2)
+            coVerify(exactly = 1) { historyRepo.getHistories(any(), any()) }
+            vm.ensureLoaded(PersonalTopNavItem.History)
+            advanceUntilIdle()
+            coVerify(exactly = 2) { historyRepo.getHistories(0, any()) }
+            accounts.value = AccountUiState()
+            advanceUntilIdle()
+            vm.ensureLoaded(PersonalTopNavItem.History)
+            advanceUntilIdle()
+            assertThat(vm.uiState.value.historyItems).isEmpty()
+            coVerify(exactly = 2) { historyRepo.getHistories(any(), any()) }
         }
 }

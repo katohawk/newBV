@@ -9,6 +9,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
@@ -224,5 +227,92 @@ class PlayerFocusLoopTest {
         }
         composeRule.onNodeWithText("255").requestFocus().performKeyInput { pressKey(Key.DirectionUp) }
         composeRule.runOnIdle { assertThat(result).isEqualTo(255f) }
+    }
+
+    private fun largeCollection() =
+        VideoListItem(
+            aid = 9,
+            cid = 1000,
+            title = "500P合集",
+            ugcPages =
+                (1..500).map { index ->
+                    VideoPage(
+                        cid = index.toLong(),
+                        index = index,
+                        title = "分P $index",
+                        duration = 60,
+                        dimension = Dimension(1920, 1080),
+                    )
+                },
+        )
+
+    @Test
+    fun five_hundred_parts_mount_only_nearby_rows_and_wrap_to_last_child() {
+        var changes = 0
+        val focusedParents = mutableListOf<Long>()
+        content {
+            VideoListController(
+                show = true,
+                currentCid = 1,
+                videoList = listOf(largeCollection()),
+                onPlayNewVideo = { changes++ },
+                onVideoFocused = { focusedParents.add(it) },
+            )
+        }
+        composeRule.onNodeWithText("分P 1").assertIsFocused()
+        composeRule.onNodeWithText("分P 250").assertDoesNotExist()
+        composeRule.onNodeWithText("分P 500").assertDoesNotExist()
+        wrap("500P合集", "分P 500")
+        composeRule.runOnIdle {
+            assertThat(changes).isEqualTo(0)
+            assertThat(focusedParents).isNotEmpty()
+            assertThat(focusedParents.toSet()).containsExactly(9L)
+        }
+    }
+
+    @Test
+    fun collapsing_current_large_collection_restores_parent_and_child_click_keeps_aid() {
+        var played: VideoListItem? = null
+        content {
+            VideoListController(
+                show = true,
+                currentCid = 1,
+                videoList = listOf(largeCollection()),
+                onPlayNewVideo = { played = it },
+            )
+        }
+        composeRule.onNodeWithText("500P合集").requestFocus().performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.onNodeWithText("500P合集").assertIsFocused()
+        composeRule.onNodeWithText("分P 1").assertDoesNotExist()
+        composeRule.runOnIdle { assertThat(played).isNull() }
+        composeRule.onNodeWithText("500P合集").performKeyInput { pressKey(Key.DirectionCenter) }
+        composeRule.onNodeWithText("分P 1").assertIsFocused().performKeyInput {
+            pressKey(Key.DirectionDown)
+            pressKey(Key.DirectionCenter)
+        }
+        composeRule.runOnIdle {
+            assertThat(played?.aid).isEqualTo(9L)
+            assertThat(played?.cid).isEqualTo(2L)
+        }
+    }
+
+    @Test
+    fun reopening_large_collection_restores_far_current_part() {
+        var show by mutableStateOf(true)
+        content {
+            VideoListController(
+                show = show,
+                currentCid = 400,
+                videoList = listOf(largeCollection()),
+                onPlayNewVideo = {},
+            )
+        }
+        composeRule.onNodeWithText("分P 400").assertIsFocused()
+        composeRule.onNodeWithText("分P 1").assertDoesNotExist()
+        composeRule.onNodeWithText("分P 500").assertDoesNotExist()
+        composeRule.runOnIdle { show = false }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { show = true }
+        composeRule.onNodeWithText("分P 400").assertIsFocused()
     }
 }

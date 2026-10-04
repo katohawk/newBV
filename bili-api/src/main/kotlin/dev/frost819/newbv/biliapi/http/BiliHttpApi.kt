@@ -505,7 +505,9 @@ object BiliHttpApi {
                     parameter("pid", avid)
                     parameter("segment_index", segmentIndex)
                 }.readRawBytes()
-        return DmSegMobileReply.parseFrom(bytes).elemsList.map { DanmakuData.fromDanmakuElem(it) }
+        return withContext(Dispatchers.Default) {
+            DmSegMobileReply.parseFrom(bytes).elemsList.map { DanmakuData.fromDanmakuElem(it) }
+        }
     }
 
     /**

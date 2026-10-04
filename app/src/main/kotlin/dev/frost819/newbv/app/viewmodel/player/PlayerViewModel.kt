@@ -56,7 +56,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -141,6 +143,9 @@ class PlayerViewModel
         // 自动跳过片头片尾：每个视频只跳一次，用户手动回看不会重复触发
         private var skipTimesJob: Job? = null
         private var detailLoadJob: Job? = null
+        private var videoActionsJob: Job? = null
+        private var navigationPagesJob: Job? = null
+        private var actionPlaybackGeneration = 0L
         private var playedCid = 0L
         private var playbackUid = 0L
         private var hasSkippedIntro = false
@@ -280,6 +285,9 @@ class PlayerViewModel
             authorMid: Long = 0,
             authorName: String,
         ) {
+            actionPlaybackGeneration++
+            videoPlayRepository.clearPlaybackMetadata()
+            videoInfoRepository.prepareVideoActions(aid)
             _uiState.update {
                 it.copy(
                     aid = aid,
@@ -376,18 +384,18 @@ class PlayerViewModel
                 try {
                     val detail = videoInfoRepository.loadSeasonContext(_uiState.value.epid, getApiType())
                     _uiState.update { it.copy(seasonId = detail.seasonId, subType = detail.subType) }
-                } catch (error: Exception) {
-                    if (error is CancellationException &&
-                        error !is kotlinx.coroutines.TimeoutCancellationException
-                    ) {
-                        throw error
-                    }
+                } catch (_: TimeoutCancellationException) {
+                    failPlayback("番剧信息加载失败，请重试")
+                    return
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
                     failPlayback("番剧信息加载失败，请重试")
                     return
                 }
             }
             loadSkipTimes()
-            videoInfoRepository.loadVideoDetail(aid, getApiType(), bvid)
+            videoInfoRepository.loadVideoDetail(aid, getApiType(), bvid, includeUserActions = false)
             if (_uiState.value.aid != aid) return
             videoInfoRepository.videoDetail.value?.takeIf { it.aid == aid }?.let { detail ->
                 _uiState.update {
@@ -398,6 +406,11 @@ class PlayerViewModel
                         cid = if (it.cid == 0L) detail.cid else it.cid,
                         authorMid = detail.author.mid,
                         authorName = detail.author.name,
+                    )
+                }
+                if (videoInfoRepository.videoList.value.isEmpty()) {
+                    videoInfoRepository.updateVideoList(
+                        listOf(VideoListItem(aid = aid, cid = _uiState.value.cid, title = detail.title)),
                     )
                 }
             }
@@ -524,6 +537,10 @@ class PlayerViewModel
         fun detachPlayer() {
             skipTimesJob?.cancel()
             detailLoadJob?.cancel()
+            videoActionsJob?.cancel()
+            navigationPagesJob?.cancel()
+            actionPlaybackGeneration++
+            videoPlayRepository.clearPlaybackMetadata()
             loadVideoJob?.cancel()
             syncProgress(scope = detachedWorkScope, isDetaching = true)
             videoPlayer?.release()
@@ -554,9 +571,39 @@ class PlayerViewModel
             if (videoPlayer?.isPlaying != true) videoPlayer?.start()
         }
 
+        /** 重试当前视频操作状态；后台加载，不影响正在播放的视频。 */
+        fun retryVideoActions() {
+            if (videoActionsJob?.isActive == true) return
+            val aid = _uiState.value.aid.takeIf { it > 0 } ?: return
+            videoActionsJob =
+                viewModelScope.launch {
+                    videoInfoRepository.refreshVideoActions(aid, getApiType())
+                }
+        }
+
+        private fun videoActionsReady(aid: Long): Boolean {
+            val state = videoInfoRepository.videoSharedState.value?.takeIf { it.aid == aid }
+            if (videoInfoRepository.isVideoActionsReady(aid)) return true
+            showShortcutTip(if (state?.userActionsError == true) "操作状态加载失败，请重试" else "操作状态加载中")
+            if (state?.userActionsLoading != true) retryVideoActions()
+            return false
+        }
+
+        private fun actionAccount() = Triple(Prefs.uid, Prefs.sessData, Prefs.accessToken)
+
+        private fun actionRequestIsCurrent(
+            aid: Long,
+            account: Triple<Long, String, String>,
+            generation: Long,
+        ): Boolean = _uiState.value.aid == aid && actionAccount() == account && actionPlaybackGeneration == generation
+
         /** 切换当前视频点赞状态，并同步详情页。 */
         fun toggleVideoLike() {
             val aid = _uiState.value.aid.takeIf { it > 0L } ?: return
+            if (!videoActionsReady(aid)) return
+            val account = actionAccount()
+            val generation = actionPlaybackGeneration
+            videoInfoRepository.beginVideoInteraction(aid)
             val current =
                 videoInfoRepository.videoSharedState.value
                     ?.takeIf { it.aid == aid }
@@ -567,9 +614,11 @@ class PlayerViewModel
                         likeRepository.updateVideoLiked(aid = aid, like = !current, preferApiType = getApiType())
                     }
                 }.onSuccess {
+                    if (!actionRequestIsCurrent(aid, account, generation)) return@onSuccess
                     videoInfoRepository.updateVideoActionState(aid = aid, liked = !current)
                 }.onFailure { error ->
                     if (error is CancellationException && error !is TimeoutCancellationException) throw error
+                    if (!actionRequestIsCurrent(aid, account, generation)) return@onFailure
                     logger.error(error) { "Failed to toggle video like: aid=$aid" }
                     _uiEffect.emit(PlayerUiEffect.ShowToast("点赞失败: ${error.message ?: "未知错误"}"))
                 }
@@ -579,15 +628,21 @@ class PlayerViewModel
         /** 为当前视频投一枚硬币，并同步详情页。 */
         fun sendVideoCoin() {
             val aid = _uiState.value.aid.takeIf { it > 0L } ?: return
+            if (!videoActionsReady(aid)) return
+            val account = actionAccount()
+            val generation = actionPlaybackGeneration
+            videoInfoRepository.beginVideoInteraction(aid)
             viewModelScope.launch {
                 runCatching {
                     withTimeout(PLAYER_ACTION_TIMEOUT_MS) {
                         coinRepository.sendVideoCoin(aid = aid, preferApiType = getApiType())
                     }
                 }.onSuccess {
+                    if (!actionRequestIsCurrent(aid, account, generation)) return@onSuccess
                     videoInfoRepository.updateVideoActionState(aid = aid, coined = true)
                 }.onFailure { error ->
                     if (error is CancellationException && error !is TimeoutCancellationException) throw error
+                    if (!actionRequestIsCurrent(aid, account, generation)) return@onFailure
                     logger.error(error) { "Failed to send video coin: aid=$aid" }
                     _uiEffect.emit(PlayerUiEffect.ShowToast("投币失败: ${error.message ?: "未知错误"}"))
                 }
@@ -597,6 +652,10 @@ class PlayerViewModel
         /** 收藏当前视频到默认收藏夹，并同步详情页。 */
         fun toggleVideoFavorite() {
             val aid = _uiState.value.aid.takeIf { it > 0L } ?: return
+            if (!videoActionsReady(aid)) return
+            val account = actionAccount()
+            val generation = actionPlaybackGeneration
+            videoInfoRepository.beginVideoInteraction(aid)
             val current =
                 videoInfoRepository.videoSharedState.value
                     ?.takeIf { it.aid == aid }
@@ -629,9 +688,11 @@ class PlayerViewModel
                         }
                     }
                 }.onSuccess {
+                    if (!actionRequestIsCurrent(aid, account, generation)) return@onSuccess
                     videoInfoRepository.updateVideoActionState(aid = aid, favorited = !current)
                 }.onFailure { error ->
                     if (error is CancellationException && error !is TimeoutCancellationException) throw error
+                    if (!actionRequestIsCurrent(aid, account, generation)) return@onFailure
                     logger.error(error) { "Failed to toggle video favorite: aid=$aid" }
                     _uiEffect.emit(PlayerUiEffect.ShowToast("收藏失败: ${error.message ?: "未知错误"}"))
                 }
@@ -641,6 +702,10 @@ class PlayerViewModel
         /** 执行当前视频一键三连，并同步详情页。 */
         fun oneClickTripleAction() {
             val aid = _uiState.value.aid.takeIf { it > 0L } ?: return
+            if (!videoActionsReady(aid)) return
+            val account = actionAccount()
+            val generation = actionPlaybackGeneration
+            videoInfoRepository.beginVideoInteraction(aid)
             val bvid = videoInfoRepository.videoDetail.value?.bvid
             viewModelScope.launch {
                 runCatching {
@@ -652,6 +717,7 @@ class PlayerViewModel
                         )
                     }
                 }.onSuccess { result ->
+                    if (!actionRequestIsCurrent(aid, account, generation)) return@onSuccess
                     if (result != null) {
                         videoInfoRepository.updateVideoActionState(
                             aid = aid,
@@ -663,6 +729,7 @@ class PlayerViewModel
                     _uiEffect.emit(PlayerUiEffect.ShowToast("一键三连"))
                 }.onFailure { error ->
                     if (error is CancellationException && error !is TimeoutCancellationException) throw error
+                    if (!actionRequestIsCurrent(aid, account, generation)) return@onFailure
                     logger.error(error) { "Failed to send one-click triple action: aid=$aid" }
                     _uiEffect.emit(PlayerUiEffect.ShowToast("一键三连失败: ${error.message ?: "未知错误"}"))
                 }
@@ -686,24 +753,44 @@ class PlayerViewModel
         fun playNextNow() {
             playNextCountdownJob?.cancel()
             _uiState.update { it.copy(showSkipToNextEp = false) }
-            val target = findNextPlayTarget()
-            if (target != null) {
-                playNextTarget(target)
-            } else {
-                showShortcutTip("没有下一集")
-            }
+            navigationPagesJob?.cancel()
+            navigationPagesJob =
+                viewModelScope.launch {
+                    if (!ensureNavigationPages(previous = false)) return@launch
+                    val target = findNextPlayTarget()
+                    if (target != null) playNextTarget(target) else showShortcutTip("没有下一集")
+                }
         }
 
         /** 立即播放上一集。 */
         fun playPreviousNow() {
             playNextCountdownJob?.cancel()
             _uiState.update { it.copy(showSkipToNextEp = false) }
-            val target = findPreviousPlayTarget()
-            if (target != null) {
-                playNextTarget(target)
-            } else {
-                showShortcutTip("没有上一集")
+            navigationPagesJob?.cancel()
+            navigationPagesJob =
+                viewModelScope.launch {
+                    if (!ensureNavigationPages(previous = true)) return@launch
+                    val target = findPreviousPlayTarget()
+                    if (target != null) playNextTarget(target) else showShortcutTip("没有上一集")
+                }
+        }
+
+        private suspend fun ensureNavigationPages(previous: Boolean): Boolean {
+            val state = _uiState.value
+            val list = videoInfoRepository.videoList.value
+            val index = list.indexOfFirst { it.aid == state.aid }
+            val targets = listOfNotNull(list.getOrNull(index), if (previous) list.getOrNull(index - 1) else null)
+            for (item in targets) {
+                if ((item.epid ?: 0) == 0 &&
+                    (item.seasonId ?: 0) == 0 &&
+                    item.ugcPages == null &&
+                    !videoInfoRepository.ensureUgcPages(item.aid, getApiType())
+                ) {
+                    showShortcutTip("选集加载失败，请重试")
+                    return false
+                }
             }
+            return _uiState.value.aid == state.aid && _uiState.value.cid == state.cid
         }
 
         /** 显示快捷键提示；新的提示会覆盖旧提示并重新计时。 */
@@ -766,12 +853,17 @@ class PlayerViewModel
                 dev.frost819.newbv.data.datastore.ActionAfterPlay.PlayNext -> { /* 继续执行 */ }
             }
 
-            val nextTarget = findNextPlayTarget()
-            if (nextTarget != null) {
-                startNextEpisodeCountdown(nextTarget)
-            } else {
-                viewModelScope.launch { _uiEffect.emit(PlayerUiEffect.FinishActivity) }
-            }
+            navigationPagesJob?.cancel()
+            navigationPagesJob =
+                viewModelScope.launch {
+                    if (!ensureNavigationPages(previous = false)) return@launch
+                    val nextTarget = findNextPlayTarget()
+                    if (nextTarget != null) {
+                        startNextEpisodeCountdown(nextTarget)
+                    } else {
+                        _uiEffect.emit(PlayerUiEffect.FinishActivity)
+                    }
+                }
         }
 
         /**
@@ -782,6 +874,11 @@ class PlayerViewModel
          */
         fun playNewVideo(newVideo: VideoListItem) {
             videoPlayer?.pause()
+            navigationPagesJob?.cancel()
+            videoActionsJob?.cancel()
+            actionPlaybackGeneration++
+            videoPlayRepository.clearPlaybackMetadata()
+            videoInfoRepository.prepareVideoActions(newVideo.aid)
 
             val shouldUpdateDetail = _uiState.value.aid != newVideo.aid
             val shouldUpdateList = videoInfoRepository.videoList.value.none { it.aid == newVideo.aid }
@@ -839,7 +936,7 @@ class PlayerViewModel
             if (shouldUpdateDetail) {
                 detailLoadJob =
                     viewModelScope.launch {
-                        videoInfoRepository.loadVideoDetail(newVideo.aid, getApiType())
+                        videoInfoRepository.loadVideoDetail(newVideo.aid, getApiType(), includeUserActions = false)
                     }
             }
             loadSkipTimes()
@@ -871,6 +968,9 @@ class PlayerViewModel
                 viewModelScope.launch(Dispatchers.IO) {
                     try {
                         resolveUrlsAndPlay(aid, cid, epid ?: 0)
+                        withContext(Dispatchers.Main) {
+                            if (!videoInfoRepository.isVideoActionsReady(aid)) retryVideoActions()
+                        }
                         launch { updateVideoShot() }
                         launch { updateVideoPages() }
                     } catch (e: CancellationException) {
@@ -1300,12 +1400,21 @@ class PlayerViewModel
                         cid = state.cid,
                         preferApiType = getApiType(),
                     )
-                _uiState.update { it.copy(videoShot = shot) }
-            }.onFailure { logger.warn { "Load video shot failed: $it" } }
+                currentCoroutineContext().ensureActive()
+                _uiState.update { if (it.aid == state.aid && it.cid == state.cid) it.copy(videoShot = shot) else it }
+            }.onFailure {
+                if (it is CancellationException) throw it
+                logger.warn { "Load video shot failed: $it" }
+            }
+        }
+
+        /** 为选集列表的新焦点项按需补齐分 P；重复请求会复用已加载数据。 */
+        fun requestVideoPages(aid: Long) {
+            viewModelScope.launch { videoInfoRepository.ensureUgcPages(aid, getApiType()) }
         }
 
         private suspend fun updateVideoPages() {
-            videoInfoRepository.updateUgcPages(getApiType())
+            videoInfoRepository.updateUgcPages(getApiType(), currentAid = _uiState.value.aid)
         }
 
         private fun syncProgress(

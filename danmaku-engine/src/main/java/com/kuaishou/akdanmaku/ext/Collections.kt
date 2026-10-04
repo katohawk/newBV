@@ -37,28 +37,22 @@ import com.kuaishou.akdanmaku.collection.TreeList
  *
  * @param key 需要查找的值
  * @param selector 获取列表数据类型中需要比较的值的选择器
- * @return 如果集合为空，返回 -1，否则返回第一个大于等于 [key] 的 index
+ * @return 第一个大于等于 [key] 的 index；不存在时返回 -1。
  */
 fun <T, K : Comparable<K>> List<T>.binarySearchAtLeast(
     key: K,
     selector: (T) -> K,
 ): Int {
     var low = 0
-    var high = size - 1
-    if (isEmpty()) return -1
-
+    var high = size
     while (low < high) {
         val mid = (low + high).ushr(1) // safe from overflows
         val midVal = get(mid)
         val cmp = compareValues(selector(midVal), key)
 
-        when {
-            cmp < 0 -> low = mid + 1
-            cmp > 0 -> high = mid
-            else -> return mid - 1
-        } // key found
+        if (cmp < 0) low = mid + 1 else high = mid
     }
-    return low // key not found
+    return if (low < size) low else -1
 }
 
 /**
@@ -66,28 +60,22 @@ fun <T, K : Comparable<K>> List<T>.binarySearchAtLeast(
  *
  * @param key 需要查找的值
  * @param selector 获取列表数据类型中需要比较的值的选择器
- * @return 如果集合为空，返回 -1，否则返回第一个小雨等于 [key] 的 index
+ * @return 最后一个小于等于 [key] 的 index；不存在时返回 -1。
  */
 fun <T, K : Comparable<K>> List<T>.binarySearchAtMost(
     key: K,
     selector: (T) -> K,
 ): Int {
     var low = 0
-    var high = size - 1
-    if (isEmpty()) return -1
-
+    var high = size
     while (low < high) {
         val mid = (low + high).ushr(1) // safe from overflows
         val midVal = get(mid)
         val cmp = compareValues(selector(midVal), key)
 
-        when {
-            cmp < 0 -> low = mid + 1
-            cmp > 0 -> high = mid
-            else -> return mid - 1
-        } // key found
+        if (cmp <= 0) low = mid + 1 else high = mid
     }
-    return high // key not found
+    return low - 1
 }
 
 fun <T : Comparable<T>> Collection<T>.toTreeList(): TreeList<T> = TreeList(this)

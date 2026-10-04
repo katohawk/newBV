@@ -8,10 +8,10 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import dev.frost819.newbv.app.ui.navigation.AppNavHost
 import dev.frost819.newbv.app.ui.navigation.HomeRoute
@@ -47,15 +47,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         setContent {
-            val themeMode by Prefs.themeModeFlow.collectAsState(initial = ThemeMode.Dark)
-            val density by Prefs.densityFlow.collectAsState(initial = 2.0f)
+            val themeMode by Prefs.themeModeFlow.collectAsStateWithLifecycle()
+            val density by Prefs.densityFlow.collectAsStateWithLifecycle()
 
             val coreThemeMode =
                 when (themeMode) {
                     dev.frost819.newbv.data.datastore.ThemeMode.FollowSystem -> ThemeMode.FollowSystem
                     dev.frost819.newbv.data.datastore.ThemeMode.Dark -> ThemeMode.Dark
                     dev.frost819.newbv.data.datastore.ThemeMode.Light -> ThemeMode.Light
-                    else -> ThemeMode.Dark
                 }
 
             BVTheme(themeMode = coreThemeMode, density = density) {

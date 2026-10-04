@@ -304,6 +304,35 @@ class VideoDetailRepositoryUnitTest {
             assertThat(result).isNull()
         }
 
+    @Test
+    fun `player detail keeps cid and history without loading user actions`() =
+        runTest {
+            // Given
+            coEvery { BiliHttpApi.getVideoDetail(any()) } returns
+                BiliResponse(code = 0, message = "", data = fakeHttpVideoDetail())
+            coEvery { BiliHttpApi.getVideoMoreInfo(any(), any()) } returns
+                BiliResponse(code = 0, message = "", data = fakeVideoMoreInfo())
+            // When
+            val detail = repository.getVideoDetail(AID, ApiType.Web, includeUserActions = false)
+            // Then
+            assertThat(detail.cid).isEqualTo(CID)
+            assertThat(detail.history.progress).isEqualTo(60)
+            coVerify(exactly = 0) { favoriteRepository.checkVideoFavoured(any(), any()) }
+            coVerify(exactly = 0) { likeRepository.checkVideoLiked(any(), any()) }
+            coVerify(exactly = 0) { coinRepository.checkVideoCoined(any(), any()) }
+        }
+
+    @Test
+    fun `separate action refresh propagates failures for retry`() =
+        runTest {
+            // Given
+            coEvery { favoriteRepository.checkVideoFavoured(any(), any()) } throws java.io.IOException("offline")
+            coEvery { likeRepository.checkVideoLiked(any(), any()) } returns true
+            coEvery { coinRepository.checkVideoCoined(any(), any()) } returns false
+            // When / Then
+            kotlin.test.assertFailsWith<java.io.IOException> { repository.getVideoUserActions(AID, ApiType.Web) }
+        }
+
     private fun fakeHttpVideoDetail(): VideoDetail {
         val videoInfo =
             dev.frost819.newbv.biliapi.http.entity.video.VideoInfo(

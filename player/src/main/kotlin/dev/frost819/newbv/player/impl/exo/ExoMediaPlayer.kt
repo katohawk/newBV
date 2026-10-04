@@ -116,6 +116,8 @@ class ExoMediaPlayer(
         mPlayer =
             ExoPlayer
                 .Builder(context)
+                // 对照弹幕卡顿：使用升级前的固定调度节奏，隔离新版默认动态调度的影响。
+                .experimentalSetDynamicSchedulingEnabled(false)
                 .setRenderersFactory(renderersFactory)
                 .setLoadControl(createPlaybackLoadControl())
                 .setSeekForwardIncrementMs(1000 * 10)

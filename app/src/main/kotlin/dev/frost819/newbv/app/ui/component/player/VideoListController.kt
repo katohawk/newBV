@@ -1,12 +1,10 @@
 package dev.frost819.newbv.app.ui.component.player
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,6 +23,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -46,18 +45,47 @@ import dev.frost819.newbv.biliapi.entity.video.VideoPage
 import dev.frost819.newbv.core.focus.touchClickable
 import dev.frost819.newbv.core.theme.BVTheme
 
+private sealed interface EpisodeRow {
+    val video: VideoListItem
+    val key: String
+
+    data class Parent(
+        override val video: VideoListItem,
+    ) : EpisodeRow {
+        override val key: String = "parent:${video.cid}"
+    }
+
+    data class Child(
+        override val video: VideoListItem,
+        val page: VideoPage,
+    ) : EpisodeRow {
+        override val key: String = "child:${video.cid}:${page.cid}"
+    }
+}
+
+// 分P铺进同一 LazyColumn，展开数百P时只组合屏幕附近的行。
+private fun episodeRows(
+    videos: List<VideoListItem>,
+    expanded: Set<Long>,
+): List<EpisodeRow> =
+    buildList {
+        videos.forEach { video ->
+            add(EpisodeRow.Parent(video))
+            if (video.cid in expanded) video.ugcPages?.forEach { add(EpisodeRow.Child(video, it)) }
+        }
+    }
+
 /**
  * 分集列表覆盖层。
  *
- * 从左侧滑入的半透明面板，显示视频分集列表。
- * 支持嵌套 UGC 分页（有 ugcPages 的视频可展开/折叠子分集）。
- * 显示时自动滚动到当前播放项并请求焦点。
+ * 父视频与展开分P共用一个 LazyColumn，保持首尾焦点循环；
+ * 打开面板或切集时定位当前播放项，展开/折叠不会触发播放。
  *
- * @param modifier 修饰符
- * @param show 是否显示
- * @param currentCid 当前播放视频的 CID
- * @param videoList 视频列表
- * @param onPlayNewVideo 点击播放新视频回调
+ * @param show 是否显示面板。
+ * @param currentCid 当前播放视频的 CID。
+ * @param videoList 视频及其子分P列表。
+ * @param onPlayNewVideo 点击分集后播放新视频。
+ * @param onVideoFocused 父视频获得焦点时按需补齐其分P数据。
  */
 @Composable
 fun VideoListController(
@@ -66,56 +94,45 @@ fun VideoListController(
     currentCid: Long,
     videoList: List<VideoListItem>,
     onPlayNewVideo: (VideoListItem) -> Unit,
+    onVideoFocused: (Long) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
-    val loop = rememberPlayerFocusLoop(videoList.size, scrollToItem = { listState.scrollToItem(it) })
-    val parentFocusRequester = remember { FocusRequester() }
-    val childFocusRequester = remember { FocusRequester() }
+    var expanded by remember(videoList.map { it.cid }) { mutableStateOf(emptySet<Long>()) }
+    val rows = remember(videoList, expanded) { episodeRows(videoList, expanded) }
+    val loop = rememberPlayerFocusLoop(rows.size, scrollToItem = { listState.scrollToItem(it) })
+    val selectedRequester = remember { FocusRequester() }
+    val selectedRow =
+        rows.firstOrNull { it is EpisodeRow.Child && it.page.cid == currentCid }
+            ?: rows.firstOrNull {
+                it.video.cid == currentCid ||
+                    it.video.ugcPages?.any { page -> page.cid == currentCid } == true
+            }
 
-    // 显示时自动滚动到当前集并请求焦点
-    LaunchedEffect(show) {
+    LaunchedEffect(show, currentCid, videoList) {
         if (show) {
-            val currentIndex =
-                videoList.indexOfFirst { video ->
-                    video.cid == currentCid ||
-                        video.ugcPages?.any { it.cid == currentCid } == true
-                }
-
-            if (currentIndex != -1) {
-                listState.animateScrollToItem(currentIndex)
-
-                val isChild =
-                    videoList
-                        .getOrNull(currentIndex)
-                        ?.ugcPages
-                        ?.any { it.cid == currentCid } == true
-
-                if (isChild) {
-                    childFocusRequester.requestFocus()
-                } else {
-                    parentFocusRequester.requestFocus()
-                }
+            videoList.firstOrNull { it.ugcPages?.any { page -> page.cid == currentCid } == true }?.let {
+                expanded = expanded + it.cid
             }
         }
     }
 
-    AnimatedVisibility(
-        visible = show,
-        enter = expandHorizontally(),
-        exit = shrinkHorizontally(),
-    ) {
+    // 目标子行由展开集合生成后再定位，不能把父项下标误用为子P下标。
+    LaunchedEffect(show, currentCid, selectedRow?.key) {
+        if (show && selectedRow != null) {
+            val index = rows.indexOfFirst { it.key == selectedRow.key }
+            listState.scrollToItem(index)
+            withFrameNanos { }
+            runCatching { selectedRequester.requestFocus() }
+        }
+    }
+
+    AnimatedVisibility(visible = show, enter = expandHorizontally(), exit = shrinkHorizontally()) {
         Surface(
             modifier = modifier,
-            colors =
-                SurfaceDefaults.colors(
-                    containerColor = Color.Black.copy(alpha = 0.5f),
-                ),
+            colors = SurfaceDefaults.colors(containerColor = Color.Black.copy(alpha = 0.5f)),
         ) {
             Box(
-                modifier =
-                    Modifier
-                        .width(300.dp)
-                        .fillMaxSize(),
+                modifier = Modifier.width(300.dp).fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
                 LazyColumn(
@@ -123,135 +140,75 @@ fun VideoListController(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding = PaddingValues(vertical = 60.dp),
                 ) {
-                    itemsIndexed(
-                        items = videoList,
-                        key = { _, video -> video.cid },
-                    ) { index, video ->
-                        VideoListItemRow(
-                            video = video,
-                            first = index == 0,
-                            last = index == videoList.lastIndex,
-                            loop = loop,
-                            currentCid = currentCid,
-                            parentFocusRequester = parentFocusRequester,
-                            childFocusRequester = childFocusRequester,
-                            onPlayNewVideo = onPlayNewVideo,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * 单个视频列表项（支持嵌套 UGC 分页）。
- */
-@Composable
-private fun VideoListItemRow(
-    video: VideoListItem,
-    first: Boolean,
-    last: Boolean,
-    loop: (Boolean, Boolean) -> Modifier,
-    currentCid: Long,
-    parentFocusRequester: FocusRequester,
-    childFocusRequester: FocusRequester,
-    onPlayNewVideo: (VideoListItem) -> Unit,
-) {
-    val hasSubPages = !video.ugcPages.isNullOrEmpty()
-    val isParentSelected = video.cid == currentCid
-    val isChildSelected = video.ugcPages?.any { it.cid == currentCid } == true
-
-    var expanded by remember(video.cid) { mutableStateOf(isChildSelected) }
-
-    // 当前播放的是子分页时自动展开父项
-    LaunchedEffect(isChildSelected) {
-        if (isChildSelected) expanded = true
-    }
-
-    Column(modifier = Modifier.animateContentSize()) {
-        // 父级视频项
-        val parentModifier =
-            if (isParentSelected) {
-                Modifier.focusRequester(parentFocusRequester)
-            } else {
-                Modifier
-            }
-
-        PlayerListItem(
-            modifier =
-                Modifier
-                    .padding(
-                        horizontal = 16.dp,
-                    ).then(loop(first, last && !(expanded && hasSubPages)))
-                    .then(parentModifier),
-            text = video.title,
-            selected = isParentSelected && !isChildSelected,
-            textAlign = TextAlign.Start,
-            trailingContent =
-                if (hasSubPages) {
-                    {
-                        Icon(
-                            imageVector =
-                                if (expanded) {
-                                    Icons.Default.KeyboardArrowUp
-                                } else {
-                                    Icons.Default.KeyboardArrowDown
-                                },
-                            contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.7f),
-                        )
-                    }
-                } else {
-                    null
-                },
-            onClick = {
-                if (hasSubPages) {
-                    expanded = !expanded
-                } else if (!isParentSelected) {
-                    onPlayNewVideo(video)
-                }
-            },
-        )
-
-        // 子分页列表
-        if (expanded && hasSubPages) {
-            Column(
-                modifier = Modifier.padding(start = 16.dp, top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                video.ugcPages?.forEachIndexed { index, page ->
-                    val isPageSelected = page.cid == currentCid
-                    val childModifier =
-                        if (isPageSelected) {
-                            Modifier.focusRequester(childFocusRequester)
-                        } else {
-                            Modifier
-                        }
-
-                    PlayerListItem(
-                        modifier =
+                    itemsIndexed(items = rows, key = { _, row -> row.key }) { index, row ->
+                        val focusModifier =
+                            if (row.key ==
+                                selectedRow?.key
+                            ) {
+                                Modifier.focusRequester(selectedRequester)
+                            } else {
+                                Modifier
+                            }
+                        val rowModifier =
                             Modifier
                                 .padding(horizontal = 16.dp)
-                                .then(loop(false, last && index == video.ugcPages.lastIndex))
-                                .then(childModifier),
-                        text = page.title,
-                        selected = isPageSelected,
-                        textAlign = TextAlign.Start,
-                        onClick = {
-                            if (!isPageSelected) {
-                                onPlayNewVideo(video.copy(cid = page.cid))
+                                .then(loop(index == 0, index == rows.lastIndex))
+                                .then(focusModifier)
+                        when (row) {
+                            is EpisodeRow.Parent -> {
+                                val hasPages = !row.video.ugcPages.isNullOrEmpty()
+                                val isExpanded = row.video.cid in expanded
+                                val childSelected = row.video.ugcPages?.any { it.cid == currentCid } == true
+                                PlayerListItem(
+                                    modifier = rowModifier,
+                                    text = row.video.title,
+                                    selected = row.video.cid == currentCid && !childSelected,
+                                    textAlign = TextAlign.Start,
+                                    onFocus = { onVideoFocused(row.video.aid) },
+                                    trailingContent =
+                                        if (hasPages) {
+                                            {
+                                                Icon(
+                                                    imageVector =
+                                                        if (isExpanded) {
+                                                            Icons.Default.KeyboardArrowUp
+                                                        } else {
+                                                            Icons.Default.KeyboardArrowDown
+                                                        },
+                                                    contentDescription = null,
+                                                    tint = Color.White.copy(alpha = 0.7f),
+                                                )
+                                            }
+                                        } else {
+                                            null
+                                        },
+                                    onClick = {
+                                        if (hasPages) {
+                                            expanded =
+                                                if (isExpanded) expanded - row.video.cid else expanded + row.video.cid
+                                        } else if (row.video.cid != currentCid) {
+                                            onPlayNewVideo(row.video)
+                                        }
+                                    },
+                                )
                             }
-                        },
-                    )
+                            is EpisodeRow.Child ->
+                                PlayerListItem(
+                                    modifier = rowModifier.padding(start = 16.dp),
+                                    text = row.page.title,
+                                    selected = row.page.cid == currentCid,
+                                    textAlign = TextAlign.Start,
+                                    onClick = {
+                                        if (row.page.cid !=
+                                            currentCid
+                                        ) {
+                                            onPlayNewVideo(row.video.copy(cid = row.page.cid))
+                                        }
+                                    },
+                                )
+                        }
+                    }
                 }
-            }
-        }
-
-        // 折叠时恢复焦点到父项
-        LaunchedEffect(expanded) {
-            if (!expanded && isParentSelected) {
-                parentFocusRequester.requestFocus()
             }
         }
     }

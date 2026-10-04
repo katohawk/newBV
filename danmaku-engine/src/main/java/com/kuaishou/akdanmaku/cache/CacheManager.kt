@@ -60,17 +60,24 @@ class CacheManager(
     private val cacheHandler by lazy { CacheHandler(cacheThread.looper) }
     private var cancelFlag = false
 
+    @Volatile
+    private var closing = false
+
     private val measureSizeCache = Collections.synchronizedMap(mutableMapOf<Long, Size>())
 
     val cachePool = DrawingCachePool(CACHE_POOL_MAX_MEMORY_SIZE)
+
+    @Volatile
     var isReleased: Boolean = false
         private set
 
+    @Synchronized
     fun requestBuildCache(
         item: DanmakuItem,
         displayer: DanmakuDisplayer,
         config: DanmakuConfig,
     ) {
+        if (closing) return
         cacheHandler
             .obtainMessage(
                 WORKER_MSG_BUILD_CACHE,
@@ -78,11 +85,13 @@ class CacheManager(
             ).sendToTarget()
     }
 
+    @Synchronized
     fun requestMeasure(
         item: DanmakuItem,
         displayer: DanmakuDisplayer,
         config: DanmakuConfig,
     ) {
+        if (closing) return
         cacheHandler
             .obtainMessage(
                 WORKER_MSG_BUILD_MEASURE,
@@ -93,7 +102,9 @@ class CacheManager(
     /**
      * 发送一个 build 结束的请求，放置在当前若干 build_cache 消息后，当此批次缓存完成后会发送一个回调消息
      */
+    @Synchronized
     fun requestBuildSign() {
+        if (closing) return
         cacheHandler.removeMessages(WORKER_MSG_RENDER_SIGN)
         cacheHandler.sendEmptyMessage(WORKER_MSG_RENDER_SIGN)
     }
@@ -103,17 +114,30 @@ class CacheManager(
         cancelFlag = true
     }
 
+    /** 停止新构建任务，按队列顺序释放位图池和缓存线程；重复调用安全。 */
+    @Synchronized
     fun requestRelease() {
-        cancelAllRequests()
+        if (closing) return
+        closing = true
+        if (!available) {
+            isReleased = true
+            return
+        }
+        // 实体和渲染快照已经解除引用，保留它们排队的缓存销毁操作。
+        cacheHandler.removeMessages(WORKER_MSG_BUILD_MEASURE)
+        cacheHandler.removeMessages(WORKER_MSG_BUILD_CACHE)
+        cacheHandler.removeMessages(WORKER_MSG_RENDER_SIGN)
         cacheHandler.sendEmptyMessage(WORKER_MSG_RELEASE)
     }
 
     fun destroyCache(cache: DrawingCache) {
+        if (isReleased) return
         if (cache == DrawingCache.EMPTY_DRAWING_CACHE) return
         cacheHandler.obtainMessage(WORKER_MSG_DESTROY, cache).sendToTarget()
     }
 
     fun releaseCache(cache: DrawingCache) {
+        if (isReleased) return
         if (cache == DrawingCache.EMPTY_DRAWING_CACHE) return
         cacheHandler.obtainMessage(WORKER_MSG_RELEASE_ITEM, cache).sendToTarget()
     }
@@ -127,17 +151,8 @@ class CacheManager(
             measureSizeCache[danmaku.danmakuId]
         }
 
-    fun release() {
-        if (available) {
-            cancelAllRequests()
-            try {
-                cacheThread.quitSafely()
-            } catch (e: Exception) {
-                Log.w(DanmakuEngine.TAG, "CacheManager release failed", e)
-            }
-        }
-        available = false
-    }
+    /** 释放缓存和工作线程，不阻塞调用线程。 */
+    fun release() = requestRelease()
 
     private class CacheInfo(
         val item: DanmakuItem,
@@ -248,6 +263,7 @@ class CacheManager(
                 WORKER_MSG_RELEASE -> {
                     cachePool.clear()
                     isReleased = true
+                    available = false
                     cacheThread.quitSafely()
                 }
             }

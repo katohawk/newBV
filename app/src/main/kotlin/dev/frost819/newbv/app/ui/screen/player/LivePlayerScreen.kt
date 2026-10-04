@@ -6,13 +6,17 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.frost819.newbv.app.ui.component.player.LivePlayerController
 import dev.frost819.newbv.app.ui.component.rememberDoublePressExit
@@ -39,13 +43,31 @@ fun LivePlayerScreen(
     viewModel: LivePlayerViewModel,
     danmakuViewModel: DanmakuViewModel,
 ) {
-    val uiState by viewModel.uiState.collectAsState()
-    val danmakuState by danmakuViewModel.danmakuState.collectAsState()
-    val debugInfo by viewModel.debugInfo.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val danmakuState by danmakuViewModel.danmakuState.collectAsStateWithLifecycle()
+    val debugInfo by viewModel.debugInfo.collectAsStateWithLifecycle()
     val videoPlayer = viewModel.videoPlayer
     val danmakuPlayer = danmakuViewModel.danmakuPlayer
 
     val danmakuEnabled = danmakuState.enabledTypes.isNotEmpty()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        danmakuViewModel.setRenderingEnabled(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        val observer =
+            LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> danmakuViewModel.setRenderingEnabled(true)
+                    Lifecycle.Event.ON_PAUSE -> danmakuViewModel.setRenderingEnabled(false)
+                    else -> Unit
+                }
+            }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            danmakuViewModel.setRenderingEnabled(false)
+        }
+    }
 
     // 双击退出：TV 遥控器（Controller onBack）和非 TV（BackHandler）共用同一计时器
     val handleBack =
@@ -55,19 +77,11 @@ fun LivePlayerScreen(
         )
     BackHandler { handleBack() }
 
-    LaunchedEffect(uiState.playerState) {
-        when (uiState.playerState) {
-            LivePlayerState.Playing -> danmakuViewModel.play()
-            LivePlayerState.Paused, LivePlayerState.Error, LivePlayerState.Ended -> danmakuViewModel.pause()
-            else -> {}
-        }
-    }
-
-    LaunchedEffect(uiState.isBuffering) {
-        if (uiState.isBuffering) {
-            danmakuViewModel.pause()
-        } else if (uiState.playerState == LivePlayerState.Playing) {
+    LaunchedEffect(uiState.playerState, uiState.isBuffering) {
+        if (uiState.playerState == LivePlayerState.Playing && !uiState.isBuffering) {
             danmakuViewModel.play()
+        } else {
+            danmakuViewModel.pause()
         }
     }
 

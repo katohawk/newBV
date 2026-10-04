@@ -35,9 +35,7 @@ fun DanmakuPlayerCompose(
             danmakuPlayer?.bindView(danmakuView)
         },
         onRelease = { danmakuView ->
-            if (danmakuView.danmakuPlayer === danmakuPlayer) {
-                danmakuView.danmakuPlayer = null
-            }
+            danmakuView.danmakuPlayer?.unbindView(danmakuView)
         },
     )
 }

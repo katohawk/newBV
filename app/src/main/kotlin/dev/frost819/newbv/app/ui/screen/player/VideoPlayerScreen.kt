@@ -1,5 +1,6 @@
 package dev.frost819.newbv.app.ui.screen.player
 
+import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -7,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -16,10 +16,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.frost819.newbv.app.entity.player.VideoListItem
@@ -48,8 +48,9 @@ import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMaskFrame
 import dev.frost819.newbv.core.log.Loggers
 import dev.frost819.newbv.danmaku.component.DanmakuPlayerCompose
 import dev.frost819.newbv.danmaku.util.DanmakuMaskFinder
+import dev.frost819.newbv.danmaku.util.bitmapMask
 import dev.frost819.newbv.danmaku.util.calculateMaskDelay
-import dev.frost819.newbv.danmaku.util.danmakuMask
+import dev.frost819.newbv.danmaku.util.createDanmakuMaskBitmap
 import dev.frost819.newbv.player.BvVideoPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
@@ -79,28 +80,35 @@ fun VideoPlayerScreen(
     val videoPlayer = playerViewModel.videoPlayer
     val danmakuPlayer = danmakuViewModel.danmakuPlayer
 
-    val uiState by playerViewModel.uiState.collectAsState()
-    val seekerState = playerViewModel.seekerState.collectAsState()
-    val danmakuState by danmakuViewModel.danmakuState.collectAsState()
-    val danmakuMask by danmakuViewModel.danmakuMask.collectAsState()
-    val videoListState by videoListViewModel.videoListState.collectAsState()
-    val subtitleState by subtitleViewModel.subtitleState.collectAsState()
-    val subtitleId by subtitleViewModel.subtitleId.collectAsState()
-    val subtitleData by subtitleViewModel.subtitleData.collectAsState()
-    val subtitleList by subtitleViewModel.subtitleList.collectAsState()
-    val sharedState by playerViewModel.videoSharedState.collectAsState()
+    val uiState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val seekerState = playerViewModel.seekerState.collectAsStateWithLifecycle()
+    val danmakuState by danmakuViewModel.danmakuState.collectAsStateWithLifecycle()
+    val danmakuMask by danmakuViewModel.danmakuMask.collectAsStateWithLifecycle()
+    val videoListState by videoListViewModel.videoListState.collectAsStateWithLifecycle()
+    val subtitleState by subtitleViewModel.subtitleState.collectAsStateWithLifecycle()
+    val subtitleId by subtitleViewModel.subtitleId.collectAsStateWithLifecycle()
+    val subtitleData by subtitleViewModel.subtitleData.collectAsStateWithLifecycle()
+    val subtitleList by subtitleViewModel.subtitleList.collectAsStateWithLifecycle()
+    val sharedState by playerViewModel.videoSharedState.collectAsStateWithLifecycle()
 
     val screenMask by menuViewModel.screenMask.collectAsStateWithLifecycle()
     var isMaskEditing by remember { mutableStateOf(false) }
 
     val maskFinder = remember { DanmakuMaskFinder() }
     var currentDanmakuMaskFrame by remember { mutableStateOf<DanmakuMaskFrame?>(null) }
+    var currentDanmakuMaskBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var playerVisible by remember(lifecycleOwner) {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
     var showInteractionDialog by remember { mutableStateOf(false) }
     var showCommentsDialog by remember { mutableStateOf(false) }
     var resumeAfterComments by remember { mutableStateOf(false) }
     var resumeAfterInteraction by remember { mutableStateOf(false) }
 
-    val videoShotCache by remember(uiState.videoShot) { mutableStateOf(VideoShotImageCache()) }
+    val videoShotCache = remember(uiState.videoShot, context) { VideoShotImageCache(context) }
+    DisposableEffect(videoShotCache) {
+        onDispose { videoShotCache.clear() }
+    }
 
     // 合并 UI 状态（包含 videoList 和 relatedVideos）
     val mergedUiState =
@@ -188,10 +196,18 @@ fun VideoPlayerScreen(
         }
     }
 
+    val maskActive = playerVisible && danmakuState.maskEnabled && danmakuState.enabledTypes.isNotEmpty()
+
+    // 隐藏的弹幕不需要查帧或生成位图；新的帧到来会取消旧转换任务。
+    LaunchedEffect(currentDanmakuMaskFrame, maskActive) {
+        val frame = currentDanmakuMaskFrame
+        currentDanmakuMaskBitmap = if (maskActive && frame != null) createDanmakuMaskBitmap(frame) else null
+    }
+
     // 弹幕蒙版更新循环
-    LaunchedEffect(danmakuState.maskEnabled, danmakuMask) {
-        if (!danmakuState.maskEnabled || danmakuMask == null) {
-            currentDanmakuMaskFrame = null
+    LaunchedEffect(maskActive, danmakuMask) {
+        currentDanmakuMaskFrame = null
+        if (!maskActive || danmakuMask == null) {
             return@LaunchedEffect
         }
         maskFinder.reset()
@@ -217,15 +233,20 @@ fun VideoPlayerScreen(
 
     // 生命周期管理：onResume 恢复播放，onPause 暂停
     DisposableEffect(lifecycleOwner) {
+        danmakuViewModel.setRenderingEnabled(playerVisible)
         val observer =
             LifecycleEventObserver { _, event ->
                 when (event) {
                     Lifecycle.Event.ON_RESUME -> {
+                        playerVisible = true
+                        danmakuViewModel.setRenderingEnabled(true)
                         if (playerViewModel.uiState.value.playerState == PlayerState.Paused) {
                             playerViewModel.togglePlayPause()
                         }
                     }
                     Lifecycle.Event.ON_PAUSE -> {
+                        playerVisible = false
+                        danmakuViewModel.setRenderingEnabled(false)
                         if (playerViewModel.uiState.value.playerState == PlayerState.Playing) {
                             playerViewModel.togglePlayPause()
                         }
@@ -236,6 +257,7 @@ fun VideoPlayerScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            danmakuViewModel.setRenderingEnabled(false)
         }
     }
 
@@ -279,6 +301,7 @@ fun VideoPlayerScreen(
         },
         onPlayPrevious = { playerViewModel.playPreviousNow() },
         onPlayNext = { playerViewModel.playNextNow() },
+        onVideoFocused = { playerViewModel.requestVideoPages(it) },
         onToggleLoop = {
             logger.info { "[PLAYBACK] loopToggle enabled=${!uiState.isLooping}" }
             playerViewModel.toggleLoop()
@@ -371,9 +394,9 @@ fun VideoPlayerScreen(
                         Modifier
                             .fillMaxSize()
                             .alpha(if (danmakuState.enabledTypes.isNotEmpty()) danmakuState.alpha else 0f)
-                            .danmakuMask(
-                                frame = currentDanmakuMaskFrame,
-                                aspectRatio = aspectRatio,
+                            .then(
+                                currentDanmakuMaskBitmap?.let { Modifier.bitmapMask(it, aspectRatio) }
+                                    ?: Modifier,
                             ),
                     danmakuPlayer = danmakuPlayer,
                 )
@@ -399,6 +422,7 @@ fun VideoPlayerScreen(
             onCoin = { playerViewModel.sendVideoCoin() },
             onFavorite = { playerViewModel.toggleVideoFavorite() },
             onOneClickTriple = { playerViewModel.oneClickTripleAction() },
+            onRetryActions = { playerViewModel.retryVideoActions() },
             onDismiss = {
                 showInteractionDialog = false
                 if (resumeAfterInteraction) {

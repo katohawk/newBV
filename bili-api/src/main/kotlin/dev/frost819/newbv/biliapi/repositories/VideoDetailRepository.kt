@@ -3,6 +3,7 @@ package dev.frost819.newbv.biliapi.repositories
 import bilibili.app.view.v1.ViewGrpcKt
 import bilibili.app.view.v1.viewReq
 import dev.frost819.newbv.biliapi.entity.ApiType
+import dev.frost819.newbv.biliapi.entity.video.UserActions
 import dev.frost819.newbv.biliapi.entity.video.VideoDetail
 import dev.frost819.newbv.biliapi.entity.video.VideoPage
 import dev.frost819.newbv.biliapi.entity.video.season.EpisodeSkipTimes
@@ -28,10 +29,15 @@ class VideoDetailRepository(
                 ViewGrpcKt.ViewCoroutineStub(channelRepository.requireDefaultChannel())
             }.getOrNull()
 
+    /**
+     * 获取详情和续播历史；播放器可省略 Web 操作状态，起播后另行加载。
+     * @param includeUserActions 是否等待点赞／投币／收藏状态，默认保持详情页行为。
+     */
     suspend fun getVideoDetail(
         aid: Long,
         preferApiType: ApiType,
         bvid: String = "",
+        includeUserActions: Boolean = true,
     ): VideoDetail =
         when (preferApiType) {
             ApiType.Web -> {
@@ -49,36 +55,45 @@ class VideoDetailRepository(
 
                     // check liked, favoured, coined status...
                     val isFavoured =
-                        async {
-                            runCatching {
-                                favoriteRepository.checkVideoFavoured(
-                                    aid = aid,
-                                    preferApiType = ApiType.Web,
-                                )
-                            }.onFailure {
-                            }.getOrDefault(false)
+                        if (includeUserActions) {
+                            async {
+                                runCatching {
+                                    favoriteRepository.checkVideoFavoured(
+                                        aid = aid,
+                                        preferApiType = ApiType.Web,
+                                    )
+                                }.onFailure { if (it is CancellationException) throw it }.getOrDefault(false)
+                            }
+                        } else {
+                            null
                         }
 
                     val isLiked =
-                        async {
-                            runCatching {
-                                likeRepository.checkVideoLiked(
-                                    aid = aid,
-                                    preferApiType = ApiType.Web,
-                                )
-                            }.onFailure {
-                            }.getOrDefault(false)
+                        if (includeUserActions) {
+                            async {
+                                runCatching {
+                                    likeRepository.checkVideoLiked(
+                                        aid = aid,
+                                        preferApiType = ApiType.Web,
+                                    )
+                                }.onFailure { if (it is CancellationException) throw it }.getOrDefault(false)
+                            }
+                        } else {
+                            null
                         }
 
                     val isCoined =
-                        async {
-                            runCatching {
-                                coinRepository.checkVideoCoined(
-                                    aid = aid,
-                                    preferApiType = ApiType.Web,
-                                )
-                            }.onFailure {
-                            }.getOrDefault(false)
+                        if (includeUserActions) {
+                            async {
+                                runCatching {
+                                    coinRepository.checkVideoCoined(
+                                        aid = aid,
+                                        preferApiType = ApiType.Web,
+                                    )
+                                }.onFailure { if (it is CancellationException) throw it }.getOrDefault(false)
+                            }
+                        } else {
+                            null
                         }
 
                     val historyAndPlayerIcon =
@@ -96,16 +111,17 @@ class VideoDetailRepository(
                                         lastPlayedCid = videoModeInfo.lastPlayCid,
                                     )
                                 history
-                            }.onFailure {
-                            }.getOrDefault(VideoDetail.History(0, 0))
+                            }.onFailure { if (it is CancellationException) throw it }.getOrDefault(
+                                VideoDetail.History(0, 0),
+                            )
                         }
 
                     videoDetailWithoutUserActions.await().let { detail ->
                         val newUserActions =
                             detail.userActions.copy(
-                                favorite = isFavoured.await(),
-                                like = isLiked.await(),
-                                coin = isCoined.await(),
+                                favorite = isFavoured?.await() ?: false,
+                                like = isLiked?.await() ?: false,
+                                coin = isCoined?.await() ?: false,
                             )
                         val newHistory = historyAndPlayerIcon.await()
                         detail.copy(
@@ -127,6 +143,18 @@ class VideoDetailRepository(
                     }.onFailure { handleGrpcException(it) }.getOrThrow()
                 VideoDetail.fromViewReply(viewReply)
             }
+        }
+
+    /** 获取视频操作状态；任一请求失败交由 UI 提示重试，取消不会变成未操作。 */
+    suspend fun getVideoUserActions(
+        aid: Long,
+        preferApiType: ApiType,
+    ): UserActions =
+        withContext(Dispatchers.IO) {
+            val favorite = async { favoriteRepository.checkVideoFavoured(aid, preferApiType) }
+            val like = async { likeRepository.checkVideoLiked(aid, preferApiType) }
+            val coin = async { coinRepository.checkVideoCoined(aid, preferApiType) }
+            UserActions(favorite = favorite.await(), like = like.await(), coin = coin.await())
         }
 
     suspend fun getUgcPages(

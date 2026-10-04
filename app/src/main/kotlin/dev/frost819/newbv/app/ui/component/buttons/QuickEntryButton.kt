@@ -136,6 +136,9 @@ fun QuickEntryButton(
  *
  * 按遥控器**菜单键**打开操作面板（不响应长按）：
  * 第一个图标「置顶」把该入口移到收藏区最前，第二个图标「取消收藏」移除该入口。
+ *
+ * @param onPinRequested 置顶前通知列表保存待恢复的焦点。
+ * @param onRemoveRequested 删除前通知列表保存相邻项位置。
  */
 @Composable
 fun QuickEntryCard(
@@ -143,6 +146,8 @@ fun QuickEntryCard(
     navController: NavController,
     modifier: Modifier = Modifier,
     viewModel: QuickEntryViewModel = hiltViewModel(),
+    onPinRequested: () -> Unit = {},
+    onRemoveRequested: () -> Unit = {},
 ) {
     val context = LocalContext.current
 
@@ -175,10 +180,12 @@ fun QuickEntryCard(
         },
         // 收藏语义为"重复收藏即置顶"：原样重新写入即移到最前
         onPinToTop = {
+            onPinRequested()
             viewModel.setSaved(entry, true)
             ToastUtils.show(context, "已置顶到最前")
         },
         onRemoveEntry = {
+            onRemoveRequested()
             viewModel.setSaved(entry, false)
             ToastUtils.show(context, "已取消首页收藏")
         },

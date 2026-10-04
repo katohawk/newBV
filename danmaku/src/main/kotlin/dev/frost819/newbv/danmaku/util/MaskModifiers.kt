@@ -2,6 +2,9 @@ package dev.frost819.newbv.danmaku.util
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
@@ -18,6 +21,10 @@ import com.caverock.androidsvg.SVG
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMaskFrame
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMobMaskFrame
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuWebMaskFrame
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 
 /**
  * 基础蒙版 Modifier：将 Bitmap 以 [BlendMode.DstIn] 方式叠加到内容上。
@@ -33,10 +40,11 @@ fun Modifier.bitmapMask(
 ): Modifier =
     composed {
         val imageBitmap = remember(bitmap) { bitmap.asImageBitmap() }
+        val layerPaint = remember { Paint() }
 
         drawWithContent {
             drawIntoCanvas { canvas ->
-                canvas.saveLayer(Rect(Offset.Zero, size), Paint())
+                canvas.saveLayer(Rect(Offset.Zero, size), layerPaint)
                 drawContent()
 
                 val screenWidth = size.width
@@ -75,8 +83,8 @@ fun Modifier.bitmapMask(
 /**
  * WebMask 蒙版 Modifier：将 SVG 数据渲染为 Bitmap 后应用 [bitmapMask]。
  *
- * [DanmakuWebMaskFrame] 包含 base64 编码的 SVG 字符串，先解码再渲染为 Bitmap。
- * Bitmap 创建结果会被 remember，只在帧数据变化时重新解析 SVG。
+ * [DanmakuWebMaskFrame] 包含已经解码的 SVG 字符串，后台将其渲染为 Bitmap。
+ * 转换在后台执行，帧变化时取消旧转换，只持有当前帧位图。
  *
  * @param frame      WebMask 帧数据
  * @param aspectRatio 视频宽高比（用于蒙版对齐）
@@ -84,32 +92,14 @@ fun Modifier.bitmapMask(
 fun Modifier.danmakuWebMask(
     frame: DanmakuWebMaskFrame,
     aspectRatio: Float,
-): Modifier =
-    composed {
-        val bitmap =
-            remember(frame) {
-                val svgObj =
-                    runCatching { SVG.getFromString(frame.svg) }.getOrNull()
-                        ?: return@remember null
-
-                val svgWidth = svgObj.documentWidth.toInt().coerceAtLeast(1)
-                val svgHeight = svgObj.documentHeight.toInt().coerceAtLeast(1)
-
-                val bmp = Bitmap.createBitmap(svgWidth, svgHeight, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bmp)
-                svgObj.renderToCanvas(canvas)
-                bmp
-            } ?: return@composed this
-
-        bitmapMask(bitmap, aspectRatio)
-    }
+): Modifier = danmakuFrameMask(frame, aspectRatio)
 
 /**
  * MobMask 蒙版 Modifier：将 1bpp 像素数据解码为 Bitmap 后应用 [bitmapMask]。
  *
  * [DanmakuMobMaskFrame] 包含帧的宽高和 1bit/pixel 的位图数据（MSB first）。
  * 位图数据被解码为 ARGB_8888 Bitmap（0bit = BLACK，1bit = TRANSPARENT），实现"挖空"效果。
- * Bitmap 创建结果会被 remember，只在帧数据变化时重新解码。
+ * 转换在后台执行，帧变化时取消旧转换，只持有当前帧位图。
  *
  * @param frame      MobMask 帧数据
  * @param aspectRatio 视频宽高比（用于蒙版对齐）
@@ -117,26 +107,73 @@ fun Modifier.danmakuWebMask(
 fun Modifier.danmakuMobMask(
     frame: DanmakuMobMaskFrame,
     aspectRatio: Float,
+): Modifier = danmakuFrameMask(frame, aspectRatio)
+
+private fun Modifier.danmakuFrameMask(
+    frame: DanmakuMaskFrame,
+    aspectRatio: Float,
 ): Modifier =
     composed {
+        val bitmap by produceState<Bitmap?>(null, frame) {
+            value = null
+            value = createDanmakuMaskBitmap(frame)
+        }
+        bitmap?.let { bitmapMask(it, aspectRatio) } ?: this
+    }
+
+/**
+ * 在 Default 工作线程将 Web SVG 或 App 1bpp 蒙版帧转换为位图。
+ *
+ * 不缓存转换结果，由调用方仅保留当前帧。取消后不会发布过时位图；
+ * 不修改或回收已经由 UI 使用的位图。
+ * @param frame 当前蒙版帧。
+ * @return ARGB_8888 位图；SVG 无法解析或像素数据不完整时返回 null。
+ * @throws kotlinx.coroutines.CancellationException 调用方取消转换时抛出。
+ */
+suspend fun createDanmakuMaskBitmap(frame: DanmakuMaskFrame): Bitmap? =
+    withContext(Dispatchers.Default) {
+        val context = currentCoroutineContext()
+        context.ensureActive()
         val bitmap =
-            remember(frame) {
-                val width = frame.width
-                val height = frame.height
-                val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-
-                val pixels =
-                    IntArray(width * height) { i ->
-                        val byteIndex = i / 8
-                        val bitOffset = 7 - (i % 8)
-                        val bit = (frame.image[byteIndex].toInt() shr bitOffset) and 1
-                        if (bit == 1) android.graphics.Color.TRANSPARENT else android.graphics.Color.BLACK
+            when (frame) {
+                is DanmakuWebMaskFrame -> {
+                    val svg = runCatching { SVG.getFromString(frame.svg) }.getOrNull() ?: return@withContext null
+                    val width = svg.documentWidth.toInt().coerceAtLeast(1)
+                    val height = svg.documentHeight.toInt().coerceAtLeast(1)
+                    context.ensureActive()
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+                        svg.renderToCanvas(Canvas(it))
                     }
-                bmp.setPixels(pixels, 0, width, 0, 0, width, height)
-                bmp
+                }
+                is DanmakuMobMaskFrame -> {
+                    val width = frame.width
+                    val height = frame.height
+                    val pixelCount = width.toLong() * height
+                    if (width <= 0 ||
+                        height <= 0 ||
+                        pixelCount > Int.MAX_VALUE ||
+                        (pixelCount + 7) / 8 > frame.image.size
+                    ) {
+                        return@withContext null
+                    }
+                    val row = IntArray(width)
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap ->
+                        // 只展开一行，避免为每帧再分配 width * height 大小的 IntArray。
+                        for (y in 0 until height) {
+                            context.ensureActive()
+                            for (x in 0 until width) {
+                                val i = y * width + x
+                                val bit = (frame.image[i / 8].toInt() shr (7 - i % 8)) and 1
+                                row[x] =
+                                    if (bit == 1) Color.TRANSPARENT else Color.BLACK
+                            }
+                            bitmap.setPixels(row, 0, width, 0, y, width, 1)
+                        }
+                    }
+                }
             }
-
-        bitmapMask(bitmap, aspectRatio)
+        context.ensureActive()
+        bitmap
     }
 
 /**
