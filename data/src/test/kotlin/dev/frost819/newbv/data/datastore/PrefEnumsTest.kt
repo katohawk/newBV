@@ -254,13 +254,13 @@ class PrefEnumsTest {
     }
 
     @Test
-    fun `LeftNaviItem fromOrdinal returns Personal for 1`() {
-        assertThat(LeftNaviItem.fromOrdinal(1)).isEqualTo(LeftNaviItem.Personal)
+    fun `LeftNaviItem fromOrdinal returns Home for 1`() {
+        assertThat(LeftNaviItem.fromOrdinal(1)).isEqualTo(LeftNaviItem.Home)
     }
 
     @Test
-    fun `LeftNaviItem fromOrdinal returns Home for 2`() {
-        assertThat(LeftNaviItem.fromOrdinal(2)).isEqualTo(LeftNaviItem.Home)
+    fun `LeftNaviItem fromOrdinal returns Personal for 2`() {
+        assertThat(LeftNaviItem.fromOrdinal(2)).isEqualTo(LeftNaviItem.Personal)
     }
 
     @Test

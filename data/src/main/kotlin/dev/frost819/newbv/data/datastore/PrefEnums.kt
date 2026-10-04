@@ -207,8 +207,8 @@ enum class PlaySpeed(
  */
 enum class LeftNaviItem : java.io.Serializable {
     Search,
-    Personal,
     Home,
+    Personal,
     UGC,
     PGC,
     Live,
