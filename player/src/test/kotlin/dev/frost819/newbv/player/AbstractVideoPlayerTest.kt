@@ -1087,6 +1087,21 @@ class AbstractVideoPlayerTest {
     }
 
     @Test
+    fun `unhandled video decode error forwards original exception to onError`() {
+        // Given
+        val listener = TestListener()
+        val error = IllegalStateException("unsupported video")
+
+        // When
+        listener.onVideoDecodeUnsupported(error)
+
+        // Then
+        assertThat(listener.onErrorCalled).isTrue()
+        assertThat(listener.lastError).isSameInstanceAs(error)
+        assertThat(listener.callbackOrder).containsExactly("onError")
+    }
+
+    @Test
     fun `VideoPlayerListener onError accepts Exception parameter`() {
         val method = VideoPlayerListener::class.java.getDeclaredMethod("onError", Exception::class.java)
 

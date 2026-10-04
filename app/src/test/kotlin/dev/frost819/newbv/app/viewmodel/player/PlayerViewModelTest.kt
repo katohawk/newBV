@@ -112,7 +112,6 @@ class PlayerViewModelTest {
         every { Prefs.incognitoMode } returns true
         every { Prefs.actionAfterPlay } returns ActionAfterPlay.Pause
         every { Prefs.defaultPlaySpeed } returns PlaySpeed.X1
-        every { Prefs.enableFfmpegAudioRenderer } returns false
         every { Prefs.enableSoftwareVideoDecoder } returns false
         every { Prefs.autoSelectCdn } returns false
 
@@ -991,7 +990,7 @@ class PlayerViewModelTest {
             every { videoCapabilityProvider.isDecodable(match { it.codec == VideoCodec.HEVC }) } returns true
 
             viewModel.uiEffect.test {
-                getVideoPlayerListener().onVideoDecodeUnsupported()
+                getVideoPlayerListener().onVideoDecodeUnsupported(IllegalStateException("video decode failed"))
                 advanceUntilIdle()
 
                 val effect = awaitItem()
@@ -1029,7 +1028,7 @@ class PlayerViewModelTest {
             every { videoCapabilityProvider.isDecodable(any()) } returns false
 
             viewModel.uiEffect.test {
-                getVideoPlayerListener().onVideoDecodeUnsupported()
+                getVideoPlayerListener().onVideoDecodeUnsupported(IllegalStateException("video decode failed"))
                 advanceUntilIdle()
                 awaitItem()
             }
@@ -1159,7 +1158,7 @@ class PlayerViewModelTest {
             }
             every { videoCapabilityProvider.isDecodable(any()) } returns false
 
-            getVideoPlayerListener().onVideoDecodeUnsupported()
+            getVideoPlayerListener().onVideoDecodeUnsupported(IllegalStateException("video decode failed"))
             advanceUntilIdle()
 
             assertThat(viewModel.uiState.value.playerState).isInstanceOf(PlayerState.Error::class.java)

@@ -37,7 +37,7 @@
 | 代理功能 | **完全删除**所有代理相关功能 |
 | 崩溃监控 | 本地为主 + 可选自建上报（移除 Firebase Crashlytics） |
 | 诊断日志 | Core Logger 输出 Logcat，崩溃/手动日志由 Ktor 网页端查看 |
-| minSdk | 21（Android 5.0+，与原版一致） |
+| minSdk | 23（Android 6.0+，支持新版 Media3） |
 | Kotlin / KSP / Java | 2.4.10 / 2.3.10 / 17 |
 | AGP / Gradle | 9.1.1 / 9.3.1 |
 | compileSdk / targetSdk | 36 / 36 |
@@ -135,7 +135,7 @@ BV 是一款基于 Jetpack Compose 开发的哔哩哔哩第三方 Android TV 应
 | KSP | 2.3.10 | Kotlin Symbol Processing（适配 Kotlin 2.4 + AGP 9） |
 | Java (JDK) | 17 | AGP 9 最低要求 |
 | compileSdk | 36 | Android 16 Baklava |
-| minSdk | 21 | Android 5.0+，与原版一致，兼容老电视盒子 |
+| minSdk | 23 | Android 6.0+；2026-10-04 确认不再支持 Android 5.x |
 | targetSdk | 36 | 最新 |
 
 #### 2.1.2 核心依赖
@@ -147,7 +147,7 @@ BV 是一款基于 Jetpack Compose 开发的哔哩哔哩第三方 Android TV 应
 | Compose TV Material | latest stable | TV 专用组件 | 同原版 |
 | Navigation-Compose | latest stable | 单 Activity 导航 | **新增**（原版无） |
 | Hilt | 2.60.1+ | 依赖注入 | **替换** Koin |
-| Media3 | 1.8.0 | 播放器引擎 | 同原版 |
+| Media3 | 1.11.1 | 播放器引擎 | 支持 VOD + Live；保留按堆预算限制缓冲 |
 | Coil | 3.x | 图片加载 | **升级**（原版 2.7） |
 | Ktor | 3.1.3 | HTTP 客户端 + 本地服务器 | 同原版 |
 | gRPC-kotlin | 1.4.1 / grpc 1.72.0 | gRPC 通信 | 同原版 |
@@ -548,7 +548,7 @@ CDN 选择 [简化]:
 **解码模式**：
 - 硬件解码（默认）：使用设备 MediaCodec 硬件解码器
 - 软件视频解码（可选）：过滤到 `OMX.google.*` / `c2.android.*` 软件解码器
-- FFmpeg 音频解码（可选）：通过 `EXTENSION_RENDERER_MODE_ON` 启用 FFmpeg 音频渲染器（支持 flac/mp3/aac/ac3/eac3）
+- 音频使用系统解码器；未集成 FFmpeg 扩展，移除无效的音频软解设置，旧偏好仅保留配置兼容。
 
 ---
 
@@ -1956,9 +1956,8 @@ CompositionLocalProvider(LocalInteractionTracker provides tracker) {
 
 #### 5.3.1 Android 版本兼容
 
-- minSdk 21（Android 5.0+），与原版一致
+- minSdk 23（Android 6.0+），采用新版 Media3
 - 使用 `androidx.core` 兼容包处理版本差异
-- Android 6.0 以下字体降级（原版逻辑保留）
 - 编解码能力检测，不支持 H.265/AV1 的设备自动降级 H.264
 
 #### 5.3.2 分辨率适配
@@ -2147,7 +2146,7 @@ CompositionLocalProvider(LocalInteractionTracker provides tracker) {
 | 自定义播放快捷键 | JSON | "" | 可绑定多组 | `player_custom_shortcuts` |
 | 快捷键触发提示 [新增] | 开关 | 开 | — | `shortcut_trigger_tips` |
 | 启用视频软解 | 开关 | 关 | — | `enable_software_video_decoder` |
-| 启用音频软解 (FFmpeg) | 开关 | 关 | — | `enable_ffmpeg_audio_renderer` |
+| FFmpeg 音频软解 | 暂不提供 | — | 未集成扩展；旧偏好仅保留兼容 | `enable_ffmpeg_audio_renderer` |
 
 ### 7.2 界面设置
 

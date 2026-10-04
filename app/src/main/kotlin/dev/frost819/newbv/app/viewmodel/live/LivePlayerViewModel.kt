@@ -176,7 +176,6 @@ class LivePlayerViewModel
                     override fun onSeekForward(seekForwardIncrementMs: Long) {}
                 },
             )
-            videoPlayer?.initPlayer()
             videoPlayer?.setOptions()
         }
 

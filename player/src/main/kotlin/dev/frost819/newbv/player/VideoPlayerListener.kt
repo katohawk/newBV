@@ -13,9 +13,13 @@ interface VideoPlayerListener {
      * 视频解码器无法处理当前格式（超出能力 / 初始化失败 / 格式不支持）。
      *
      * 与 [onError] 区分：调用方可据此尝试回退到其它编码或画质后重试，
-     * 而非直接报错。默认空实现，兼容仅关心 [onError] 的使用者。
+     * 而非直接报错。默认交给 [onError]，避免没有回退策略的直播调用方吞掉异常。
+     *
+     * @param error 原始解码异常，保留诊断信息。
      */
-    fun onVideoDecodeUnsupported() {}
+    fun onVideoDecodeUnsupported(error: Exception) {
+        onError(error)
+    }
 
     /** 播放器准备就绪，可以开始播放 */
     fun onReady()

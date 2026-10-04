@@ -1,5 +1,6 @@
 package dev.frost819.newbv.player.impl.exo
 
+import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import com.google.common.truth.Truth.assertThat
 import org.junit.jupiter.api.Test
@@ -10,6 +11,16 @@ import org.junit.jupiter.api.Test
  * 保证解码能力相关错误被识别（触发回退），其它错误不被误判（走普通 onError）。
  */
 class VideoDecodeErrorTest {
+    @Test
+    fun `audio or unknown renderer errors never trigger video fallback`() {
+        // Given
+        val code = PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
+
+        // When / Then
+        assertThat(isVideoDecodeError(code, C.TRACK_TYPE_AUDIO)).isFalse()
+        assertThat(isVideoDecodeError(code, null)).isFalse()
+    }
+
     @Test
     fun `decode related error codes are recognized`() {
         val decodeCodes =
@@ -22,7 +33,7 @@ class VideoDecodeErrorTest {
             )
 
         decodeCodes.forEach { code ->
-            assertThat(isVideoDecodeError(code)).isTrue()
+            assertThat(isVideoDecodeError(code, C.TRACK_TYPE_VIDEO)).isTrue()
         }
     }
 
@@ -38,7 +49,7 @@ class VideoDecodeErrorTest {
             )
 
         otherCodes.forEach { code ->
-            assertThat(isVideoDecodeError(code)).isFalse()
+            assertThat(isVideoDecodeError(code, C.TRACK_TYPE_VIDEO)).isFalse()
         }
     }
 }

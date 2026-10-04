@@ -54,7 +54,6 @@ fun AudioVideoSetting(modifier: Modifier = Modifier) {
     var selectedActionAfterPlay by remember { mutableStateOf(Prefs.actionAfterPlay) }
     var playerCustomShortcuts by remember { mutableStateOf(PlayerCustomShortcutsStore.get()) }
 
-    var enableFfmpegAudioRenderer by remember { mutableStateOf(Prefs.enableFfmpegAudioRenderer) }
     var enableSoftwareVideoDecoder by remember { mutableStateOf(Prefs.enableSoftwareVideoDecoder) }
     var showPlayerDebugInfo by remember { mutableStateOf(Prefs.showPlayerDebugInfo) }
     var autoSelectCdn by remember { mutableStateOf(Prefs.autoSelectCdn) }
@@ -111,15 +110,6 @@ fun AudioVideoSetting(modifier: Modifier = Modifier) {
             onCheckedChange = {
                 enableSoftwareVideoDecoder = it
                 Prefs.enableSoftwareVideoDecoder = it
-            },
-        )
-        SettingSwitchListItem(
-            title = "FFmpeg 音频渲染",
-            supportText = "使用 FFmpeg 进行音频解码渲染",
-            checked = enableFfmpegAudioRenderer,
-            onCheckedChange = {
-                enableFfmpegAudioRenderer = it
-                Prefs.enableFfmpegAudioRenderer = it
             },
         )
         SettingSwitchListItem(

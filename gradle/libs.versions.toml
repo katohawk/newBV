@@ -25,7 +25,7 @@ compose-tv = "1.1.0-alpha01"
 compose-tv-foundation = "1.0.0-alpha12"
 
 # === Media3 ===
-media3 = "1.8.0"
+media3 = "1.11.1"
 
 # === Hilt ===
 hilt = "2.60.1"

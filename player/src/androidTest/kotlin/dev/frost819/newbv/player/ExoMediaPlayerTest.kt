@@ -49,7 +49,6 @@ class ExoMediaPlayerTest {
                         VideoPlayerOptions(
                             userAgent = "test-agent",
                             referer = "https://www.bilibili.com",
-                            enableFfmpegAudioRenderer = false,
                             enableSoftwareVideoDecoder = false,
                         ),
                 )
@@ -67,6 +66,36 @@ class ExoMediaPlayerTest {
     fun initPlayer_createsExoPlayerInstance() {
         val mPlayer = runOnMain { player.mPlayer }
         assertThat(mPlayer).isNotNull()
+    }
+
+    @Test
+    fun initPlayer_repeatedCallKeepsExistingInstance() {
+        // Given
+        val original = runOnMain { player.mPlayer }
+
+        // When
+        runOnMainVoid { player.initPlayer() }
+
+        // Then
+        assertThat(runOnMain { player.mPlayer }).isSameInstanceAs(original)
+    }
+
+    @Test
+    fun release_clearsInstanceAndAllowsFreshInitialization() {
+        // Given
+        val original = runOnMain { player.mPlayer }
+
+        // When
+        runOnMainVoid { player.release() }
+
+        // Then
+        assertThat(runOnMain { player.mPlayer }).isNull()
+        runOnMainVoid {
+            player.release()
+            player.initPlayer()
+        }
+        assertThat(runOnMain { player.mPlayer }).isNotNull()
+        assertThat(runOnMain { player.mPlayer }).isNotSameInstanceAs(original)
     }
 
     @Test
@@ -186,7 +215,6 @@ class ExoMediaPlayerTest {
                     context = context,
                     options =
                         VideoPlayerOptions(
-                            enableFfmpegAudioRenderer = true,
                             enableSoftwareVideoDecoder = true,
                         ),
                 )

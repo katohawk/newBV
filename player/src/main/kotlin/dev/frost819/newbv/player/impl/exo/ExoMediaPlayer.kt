@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -11,6 +12,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -38,9 +40,8 @@ import java.util.Locale
  *
  * 支持：
  * - DASH 视频流（视频+音频分离，使用 [MergingMediaSource] 合并）
- * - HLS / FLV 直播流（使用 [ProgressiveMediaSource]）
+ * - HLS / FLV 直播流
  * - 软件解码 / 硬件解码切换
- * - FFmpeg 音频渲染器（需配合 ffmpegDecoder 库）
  *
  * @param context Android Context
  * @param options 播放器配置
@@ -87,14 +88,11 @@ class ExoMediaPlayer(
     }
 
     override fun initPlayer() {
+        // 构造时已初始化；重复调用不得覆盖尚未释放的播放器实例。
+        if (mPlayer != null) return
         val renderersFactory =
             DefaultRenderersFactory(context).apply {
-                setExtensionRendererMode(
-                    when (options.enableFfmpegAudioRenderer) {
-                        true -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
-                        false -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
-                    },
-                )
+                setEnableDecoderFallback(true)
                 if (options.enableSoftwareVideoDecoder) {
                     // 强制软件解码：只选择 OMX.google.* / c2.android.* 开头的解码器
                     setMediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
@@ -228,7 +226,10 @@ class ExoMediaPlayer(
     }
 
     override fun release() {
+        mPlayer?.removeListener(this)
         mPlayer?.release()
+        mPlayer = null
+        mMediaSource = null
     }
 
     override val currentPosition: Long
@@ -316,8 +317,9 @@ class ExoMediaPlayer(
             return
         }
         // 解码器无法处理当前格式：上报专用信号，交由上层尝试回退编码/画质
-        if (isVideoDecodeError(error.errorCode)) {
-            mPlayerEventListener?.onVideoDecodeUnsupported()
+        val rendererType = MimeTypes.getTrackType((error as? ExoPlaybackException)?.rendererFormat?.sampleMimeType)
+        if (isVideoDecodeError(error.errorCode, rendererType)) {
+            mPlayerEventListener?.onVideoDecodeUnsupported(error)
             return
         }
         mPlayerEventListener?.onError(error)
@@ -450,16 +452,24 @@ private class ExtXStartStrippingParser(
  * 是否为视频解码能力相关错误（可尝试换编码 / 降画质重试）。
  *
  * 覆盖解码器初始化失败、查询失败、解码失败、格式超出能力、格式不支持；
- * 其余错误（网络、解析容器等）交由普通 [VideoPlayerListener.onError] 处理。
+ * 音频解码错误及其余错误（网络、解析容器等）交由普通 [VideoPlayerListener.onError] 处理。
+ *
+ * @param errorCode Media3 播放错误码。
+ * @param rendererType 发生异常的渲染器类型，未知时不尝试视频回退。
+ * @return 是否需要尝试更换视频编码或画质。
  */
-internal fun isVideoDecodeError(errorCode: Int): Boolean =
-    when (errorCode) {
-        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
-        PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
-        PlaybackException.ERROR_CODE_DECODING_FAILED,
-        PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
-        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
-        -> true
+internal fun isVideoDecodeError(
+    errorCode: Int,
+    rendererType: Int?,
+): Boolean =
+    rendererType == C.TRACK_TYPE_VIDEO &&
+        when (errorCode) {
+            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+            PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+            PlaybackException.ERROR_CODE_DECODING_FAILED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+            -> true
 
-        else -> false
-    }
+            else -> false
+        }

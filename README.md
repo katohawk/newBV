@@ -6,7 +6,7 @@
 
 **BV 的架构重构版**
 
-[![Android Sdk Require](https://img.shields.io/badge/Android-5.0%2B-informational?logo=android)](https://apilevels.com/#:~:text=Jetpack%20Compose%20requires%20a%20minSdk%20of%2021%20or%20higher)
+[![Android Sdk Require](https://img.shields.io/badge/Android-6.0%2B-informational?logo=android)](https://apilevels.com/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
 </div>
@@ -14,7 +14,7 @@
 ---
 
 newBV 是基于 [BV](https://github.com/aaa1115910/bv) 重构的 [哔哩哔哩](https://www.bilibili.com) 第三方 `Android TV`
-客户端，使用 `Jetpack Compose` 开发，支持 `Android 5.0+`（minSdk 21）。
+客户端，使用 `Jetpack Compose` 开发，支持 `Android 6.0+`（minSdk 23）。
 
 **这不是 BV 的 1:1 复刻，而是架构重构 + 功能增强。保留了原版 BV 核心使用体验的同时，新增了许多呼声很高的功能，并重构了软件架构。**
 

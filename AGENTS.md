@@ -32,7 +32,7 @@ new BV 是基于 [BV](https://github.com/aaa1115910/bv)（源码在 `bv/` 目录
 | 仅 Media3 播放器 | 不接入 VLC，播放器抽象支持 VOD + Live |
 | 代理功能完全删除 | 不引入任何代理/ProxyArea/Ali CDN 逻辑 |
 | 无 Firebase | 崩溃监控用本地 + 可选自建上报 |
-| minSdk 21 | 不允许使用仅 API 22+ 的 API 而不做兼容 |
+| minSdk 23 | Android 6.0+；不允许使用仅 API 24+ 的 API 而不做兼容 |
 | Kotlin 2.4.10 / KSP 2.3.10 / Java 17 | 版本锁定，不擅自升级 |
 
 ### 1.4 模块结构

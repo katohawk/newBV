@@ -1,5 +1,6 @@
 package dev.frost819.newbv.app.viewmodel.live
 
+import android.content.Context
 import androidx.compose.runtime.MutableState
 import androidx.lifecycle.viewModelScope
 import com.google.common.truth.Truth.assertThat
@@ -7,10 +8,14 @@ import dev.frost819.newbv.biliapi.repositories.LivePlayInfo
 import dev.frost819.newbv.biliapi.repositories.LivePlayLine
 import dev.frost819.newbv.biliapi.repositories.LiveRepository
 import dev.frost819.newbv.player.AbstractVideoPlayer
+import dev.frost819.newbv.player.VideoPlayerListener
+import dev.frost819.newbv.player.impl.exo.ExoMediaPlayer
 import dev.frost819.newbv.player.impl.exo.ExoPlayerFactory
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -53,6 +58,27 @@ class LivePlayerViewModelTest {
     fun tearDown() {
         runCatching { viewModel.viewModelScope.cancel() }
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `live decode error exits buffering and retains original message`() {
+        // Given
+        val player = mockk<ExoMediaPlayer>(relaxed = true)
+        val listener = slot<VideoPlayerListener>()
+        every { exoPlayerFactory.create(any(), any()) } returns player
+        every { player.setPlayerEventListener(capture(listener)) } returns Unit
+        updateUiState { it.copy(isBuffering = true) }
+        viewModel.initVideoPlayer(mockk<Context>())
+
+        // When
+        listener.captured.onVideoDecodeUnsupported(IllegalStateException("unsupported video"))
+
+        // Then
+        assertThat(viewModel.uiState.value.playerState).isEqualTo(LivePlayerState.Error)
+        assertThat(viewModel.uiState.value.isBuffering).isFalse()
+        assertThat(viewModel.uiState.value.errorMessage).isEqualTo("unsupported video")
+        verify(exactly = 1) { exoPlayerFactory.create(any(), any()) }
+        verify(exactly = 0) { player.initPlayer() }
     }
 
     @Test

@@ -203,10 +203,10 @@ class PlayerViewModel
                     }
                 }
 
-                override fun onVideoDecodeUnsupported() {
+                override fun onVideoDecodeUnsupported(error: Exception) {
                     logger.info {
                         "onVideoDecodeUnsupported: qn=${_uiState.value.mediaProfileState.qualityId}, " +
-                            "codec=${_uiState.value.mediaProfileState.videoCodec}"
+                            "codec=${_uiState.value.mediaProfileState.videoCodec}, error=$error"
                     }
                     viewModelScope.launch { handleDecodeUnsupported() }
                 }
@@ -508,7 +508,6 @@ class PlayerViewModel
                         PlayerConstants.getReferer(
                             if (apiType == DataApiType.App) ApiType.App else ApiType.Web,
                         ),
-                    enableFfmpegAudioRenderer = Prefs.enableFfmpegAudioRenderer,
                     enableSoftwareVideoDecoder = Prefs.enableSoftwareVideoDecoder,
                 )
 

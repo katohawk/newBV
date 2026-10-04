@@ -102,7 +102,6 @@ class ExoMediaPlayerStreamTest {
                         VideoPlayerOptions(
                             userAgent = "test-agent",
                             referer = "https://www.bilibili.com",
-                            enableFfmpegAudioRenderer = false,
                             enableSoftwareVideoDecoder = false,
                         ),
                 )

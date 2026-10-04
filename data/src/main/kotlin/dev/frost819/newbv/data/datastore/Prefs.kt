@@ -310,7 +310,7 @@ object Prefs {
         restore = { Audio.fromCode(it) },
     )
 
-    /** 启用 FFmpeg 音频软解。 */
+    /** 历史 FFmpeg 音频偏好，仅保留旧配置兼容；当前版本未集成扩展。 */
     var enableFfmpegAudioRenderer by pref(PrefKeys.enableFfmpegAudioRenderer, false)
 
     // --- 播放器 - 弹幕（PRD 7.3） ---
