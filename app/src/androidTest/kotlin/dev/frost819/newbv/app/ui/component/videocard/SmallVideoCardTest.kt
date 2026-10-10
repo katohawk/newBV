@@ -1,14 +1,20 @@
 package dev.frost819.newbv.app.ui.component.videocard
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.google.common.truth.Truth.assertThat
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -47,6 +53,73 @@ class SmallVideoCardTest {
             }
         }
         composeRule.waitForIdle()
+    }
+
+    @Test
+    fun titles_reserve_two_lines_and_ellipsis_overflow() {
+        val titles = listOf("短标题", "第一行\n第二行", "超长视频标题".repeat(30))
+        setContent {
+            Column {
+                titles.forEach { title ->
+                    SmallVideoCard(
+                        modifier = Modifier.width(200.dp),
+                        data = fakeData.copy(title = title),
+                        onClick = {},
+                    )
+                }
+            }
+        }
+
+        val heights =
+            titles.map { title ->
+                composeRule
+                    .onNodeWithText(title, useUnmergedTree = true)
+                    .fetchSemanticsNode()
+                    .boundsInRoot.height
+            }
+        assertThat(heights[0]).isEqualTo(heights[1])
+        assertThat(heights[2]).isEqualTo(heights[1])
+
+        val layouts = mutableListOf<TextLayoutResult>()
+        composeRule
+            .onNodeWithText(titles.last(), useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertThat(layouts.single().lineCount).isEqualTo(2)
+        assertThat(layouts.single().isLineEllipsized(1)).isTrue()
+    }
+
+    @Test
+    fun season_titles_reserve_two_lines_and_ellipsis_overflow() {
+        val titles = listOf("短标题", "第一行\n第二行", "超长番剧标题".repeat(30))
+        setContent {
+            Row {
+                titles.forEach { title ->
+                    SeasonCard(
+                        modifier = Modifier.width(120.dp),
+                        data = SeasonCardData(seasonId = 1, title = title, cover = ""),
+                        onClick = {},
+                        quickEntry = null,
+                    )
+                }
+            }
+        }
+
+        val heights =
+            titles.map { title ->
+                composeRule
+                    .onNodeWithText(title, useUnmergedTree = true)
+                    .fetchSemanticsNode()
+                    .boundsInRoot.height
+            }
+        assertThat(heights[0]).isEqualTo(heights[1])
+        assertThat(heights[2]).isEqualTo(heights[1])
+
+        val layouts = mutableListOf<TextLayoutResult>()
+        composeRule
+            .onNodeWithText(titles.last(), useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertThat(layouts.single().lineCount).isEqualTo(2)
+        assertThat(layouts.single().isLineEllipsized(1)).isTrue()
     }
 
     @Test

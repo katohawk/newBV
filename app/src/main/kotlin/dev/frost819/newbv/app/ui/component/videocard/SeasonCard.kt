@@ -134,7 +134,8 @@ fun SeasonCard(
                     Text(
                         text = data.title,
                         style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
+                        minLines = 2,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                     if (!data.subTitle.isNullOrEmpty()) {

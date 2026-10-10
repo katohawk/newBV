@@ -421,6 +421,7 @@ private fun CardInfo(
         Text(
             text = title,
             style = MaterialTheme.typography.titleMedium,
+            minLines = 2,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth(),
