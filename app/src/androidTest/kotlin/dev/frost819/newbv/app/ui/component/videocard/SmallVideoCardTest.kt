@@ -6,9 +6,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.text.TextLayoutResult
@@ -60,9 +62,9 @@ class SmallVideoCardTest {
         val titles = listOf("短标题", "第一行\n第二行", "超长视频标题".repeat(30))
         setContent {
             Column {
-                titles.forEach { title ->
+                titles.forEachIndexed { index, title ->
                     SmallVideoCard(
-                        modifier = Modifier.width(200.dp),
+                        modifier = Modifier.width(200.dp).testTag("title_card_$index"),
                         data = fakeData.copy(title = title),
                         onClick = {},
                     )
@@ -71,9 +73,9 @@ class SmallVideoCardTest {
         }
 
         val heights =
-            titles.map { title ->
+            titles.indices.map { index ->
                 composeRule
-                    .onNodeWithText(title, useUnmergedTree = true)
+                    .onNodeWithTag("title_card_$index", useUnmergedTree = true)
                     .fetchSemanticsNode()
                     .boundsInRoot.height
             }
@@ -93,9 +95,9 @@ class SmallVideoCardTest {
         val titles = listOf("短标题", "第一行\n第二行", "超长番剧标题".repeat(30))
         setContent {
             Row {
-                titles.forEach { title ->
+                titles.forEachIndexed { index, title ->
                     SeasonCard(
-                        modifier = Modifier.width(120.dp),
+                        modifier = Modifier.width(120.dp).testTag("title_card_$index"),
                         data = SeasonCardData(seasonId = 1, title = title, cover = ""),
                         onClick = {},
                         quickEntry = null,
@@ -105,9 +107,9 @@ class SmallVideoCardTest {
         }
 
         val heights =
-            titles.map { title ->
+            titles.indices.map { index ->
                 composeRule
-                    .onNodeWithText(title, useUnmergedTree = true)
+                    .onNodeWithTag("title_card_$index", useUnmergedTree = true)
                     .fetchSemanticsNode()
                     .boundsInRoot.height
             }

@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -131,8 +132,12 @@ fun SeasonCard(
                 Column(
                     modifier = Modifier.padding(8.dp),
                 ) {
+                    // 与普通视频卡片预留相同的两行标题高度。
+                    val titleHeight =
+                        with(LocalDensity.current) { (MaterialTheme.typography.titleMedium.fontSize * 3.5f).toDp() }
                     Text(
                         text = data.title,
+                        modifier = Modifier.height(titleHeight),
                         style = MaterialTheme.typography.titleMedium,
                         minLines = 2,
                         maxLines = 2,

@@ -37,6 +37,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -415,6 +416,8 @@ private fun CardInfo(
     upName: String,
     pubTime: String?,
 ) {
+    // 中文回退字体的 minLines 度量不同，固定两行含字体留白的高度以保证卡片对齐。
+    val titleHeight = with(LocalDensity.current) { (MaterialTheme.typography.titleMedium.fontSize * 3.5f).toDp() }
     Column(
         modifier = modifier.padding(vertical = 6.dp),
     ) {
@@ -424,7 +427,7 @@ private fun CardInfo(
             minLines = 2,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().height(titleHeight),
         )
         Spacer(Modifier.height(4.dp))
         Row(
