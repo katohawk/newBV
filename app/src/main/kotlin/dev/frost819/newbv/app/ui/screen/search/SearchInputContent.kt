@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +60,7 @@ import dev.frost819.newbv.data.datastore.Prefs
  * @param focusRequester 内容区入口焦点请求器（由 MainScreen 传入）。
  * @param focusSaver 焦点恢复器（由 MainScreen 共享传入）。
  * @param onSearch 点击搜索回调。
+ * @param isActive 当前左侧栏选中的页面；进入时自动刷新。
  */
 @Composable
 fun SearchInputContent(
@@ -67,8 +69,12 @@ fun SearchInputContent(
     focusRequester: FocusRequester,
     focusSaver: FocusSaver,
     onSearch: (String) -> Unit,
+    isActive: Boolean = true,
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    LaunchedEffect(isActive) {
+        if (isActive) viewModel.refresh()
+    }
 
     Row(
         modifier =

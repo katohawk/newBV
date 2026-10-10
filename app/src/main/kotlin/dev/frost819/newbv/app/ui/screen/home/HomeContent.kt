@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -24,6 +25,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -55,12 +57,13 @@ internal fun firstToViewItemKey(items: List<ToViewItem>): String? =
  * 首页内容（TopNav + 4 个子 Tab）。
  *
  * Tab 顺序固定为：推荐、热门、历史、稍后再看。
- * Tab 切换使用 [AnimatedContent] 横向滑动；滑动焦点切换不刷新，
- * 仅点击 Tab 按钮时刷新一次该 Tab。菜单键同样刷新当前 Tab。
+ * Tab 切换使用 [AnimatedContent] 横向滑动并恢复纵向位置；推荐最左侧进入侧栏，最后一页右侧循环到推荐。
+ * 首页四个 Tab 都保留缓存，不因切换自动刷新；点击标题或菜单键可手动刷新。
  *
  * @param navFocusRequester 顶部 Tab 的焦点请求器（由 MainScreen 传入）。
  * @param navController 导航控制器（跳转详情页等）。
  * @param focusSaver 焦点恢复器（由 MainScreen 共享传入）。
+ * @param onFocusLeftNav 推荐列表最左侧按左键时聚焦当前侧栏项。
  * @param isActive 当前内容是否仍为主页面选中的导航项。
  */
 @Composable
@@ -68,6 +71,7 @@ fun HomeContent(
     navFocusRequester: FocusRequester,
     navController: NavController,
     focusSaver: FocusSaver,
+    onFocusLeftNav: () -> Unit,
     isActive: Boolean = true,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
@@ -85,6 +89,10 @@ fun HomeContent(
             Prefs.firstHomeTopNavItem.takeIf { it in homeTabs } ?: HomeTopNavItem.Recommend
         }
     var selectedTab by rememberSaveable { mutableStateOf(firstTab) }
+    val tabContentState = rememberSaveableStateHolder()
+    val tabFocusKeys = rememberSaveable { hashMapOf<HomeTopNavItem, String>() }
+    var pendingTabFocus by remember { mutableStateOf<HomeTopNavItem?>(null) }
+    val selectedTabFocusRequester = remember { FocusRequester() }
     var focusOnContent by remember { mutableStateOf(false) }
     // 顶部 Tab 区域是否持有焦点（冷启动默认聚焦 TopNav）
     var navHasFocus by remember { mutableStateOf(false) }
@@ -92,7 +100,7 @@ fun HomeContent(
     // 落焦成功或用户已主动移动焦点后置 false，避免后续抢占焦点
     var pendingInitialFocus by rememberSaveable { mutableStateOf(true) }
     val uiState by viewModel.uiState.collectAsState()
-    // 与个人页共享同一 ViewModel 实例（同一导航目的地作用域），数据只加载一次
+    // 与个人页共享同一 ViewModel 实例；首页切换只加载尚未加载的数据。
     val personalViewModel: PersonalViewModel = hiltViewModel()
     val personalState by personalViewModel.uiState.collectAsState()
     val accountKey =
@@ -111,6 +119,70 @@ fun HomeContent(
     }
 
     val tabItems = remember { homeTabs.map { HomeTabItem(it) } }
+    val switchTabAtBoundary: (Int) -> Unit = { step ->
+        if (isActive && pendingTabFocus == null) {
+            pendingInitialFocus = false
+            tabFocusKeys[selectedTab] = focusSaver.savedKeyValue()
+            if (step < 0 && selectedTab == homeTabs.first()) {
+                onFocusLeftNav()
+            } else {
+                val next = homeTabs[(homeTabs.indexOf(selectedTab) + step + homeTabs.size) % homeTabs.size]
+                pendingTabFocus = next
+                selectedTab = next
+            }
+        }
+    }
+
+    val firstSelectedKey =
+        when (selectedTab) {
+            HomeTopNavItem.Recommend, HomeTopNavItem.Dynamics -> firstRecommendItemKey(uiState)
+            HomeTopNavItem.Popular -> if (uiState.popularItems.isNotEmpty()) "popular_0" else null
+            HomeTopNavItem.History -> if (personalState.historyItems.isNotEmpty()) "history_0" else null
+            HomeTopNavItem.ToView -> firstToViewItemKey(personalViewModel.toViewItems)
+        }
+    val selectedLoading =
+        when (selectedTab) {
+            HomeTopNavItem.Recommend, HomeTopNavItem.Dynamics -> uiState.recommendLoading
+            HomeTopNavItem.Popular -> uiState.popularLoading
+            HomeTopNavItem.History -> personalState.historyLoading
+            HomeTopNavItem.ToView -> personalState.toViewLoading
+        }
+    LaunchedEffect(selectedTab, pendingTabFocus, firstSelectedKey, selectedLoading, isActive) {
+        if (!isActive) {
+            pendingTabFocus = null
+            return@LaunchedEffect
+        }
+        if (pendingTabFocus != selectedTab) return@LaunchedEffect
+        // 等切换后的 LazyGrid 挂载，并从该 Tab 自己保存的滚动位置恢复焦点。
+        delay(50)
+        val savedKey = tabFocusKeys[selectedTab]
+        repeat(30) {
+            val focused =
+                savedKey?.let { key ->
+                    runCatching { focusSaver.focusRequesterFor(key).requestFocus() }.getOrDefault(false)
+                } ?: false
+            if (focused) {
+                pendingTabFocus = null
+                return@LaunchedEffect
+            }
+            if (savedKey == null &&
+                firstSelectedKey != null &&
+                runCatching { focusSaver.focusRequesterFor(firstSelectedKey).requestFocus() }.getOrDefault(false)
+            ) {
+                pendingTabFocus = null
+                return@LaunchedEffect
+            }
+            delay(16)
+        }
+        if (firstSelectedKey != null) {
+            runCatching { focusSaver.focusRequesterFor(firstSelectedKey).requestFocus() }
+            pendingTabFocus = null
+        } else {
+            // 空列表或加载失败仍有可操作的焦点；数据到达后会再次进入列表。
+            runCatching { selectedTabFocusRequester.requestFocus() }
+            if (!selectedLoading) pendingTabFocus = null
+        }
+    }
 
     // 首个 Tab 的第一个卡片对应的焦点 key（各子页面的 focusSaverItem 命名不同）
     val firstTabInitialFocusKey =
@@ -156,12 +228,33 @@ fun HomeContent(
                 modifier =
                     Modifier
                         .focusRequester(navFocusRequester)
-                        .onFocusChanged { navHasFocus = it.hasFocus },
+                        .onFocusChanged { navHasFocus = it.hasFocus }
+                        .onPreviewKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyDown) {
+                                pendingTabFocus = null
+                            }
+                            false
+                        },
                 items = tabItems,
                 selectedIndex = tabItems.indexOf(HomeTabItem(selectedTab)),
                 isLargePadding = !focusOnContent,
-                onSelectedChanged = { nav ->
+                selectedTabFocusRequester = selectedTabFocusRequester,
+                onSelectedChanged = selectTab@{ nav ->
                     val tab = (nav as HomeTabItem).item
+                    // 切换时旧网格销毁会临时自动聚焦旧标题，不能让它撤销目标 Tab。
+                    if (pendingTabFocus != null && tab != selectedTab) return@selectTab
+                    if (tab != selectedTab) {
+                        val key = focusSaver.savedKeyValue()
+                        val prefix =
+                            when (selectedTab) {
+                                HomeTopNavItem.Recommend, HomeTopNavItem.Dynamics -> "rcmd_"
+                                HomeTopNavItem.Popular -> "popular_"
+                                HomeTopNavItem.History -> "history_"
+                                HomeTopNavItem.ToView -> "toview_"
+                            }
+                        if (key.startsWith(prefix)) tabFocusKeys[selectedTab] = key
+                        pendingTabFocus = null
+                    }
                     selectedTab = tab
                 },
                 onClick = { nav ->
@@ -214,39 +307,45 @@ fun HomeContent(
                     }
                 },
             ) { screen ->
-                when (screen) {
-                    HomeTopNavItem.Recommend ->
-                        RecommendScreen(
-                            viewModel = viewModel,
-                            navController = navController,
-                            focusSaver = focusSaver,
-                            onFocusTopNav = { navFocusRequester.requestFocus() },
-                        )
-                    HomeTopNavItem.Popular ->
-                        PopularScreen(
-                            viewModel = viewModel,
-                            navController = navController,
-                            focusSaver = focusSaver,
-                        )
-                    HomeTopNavItem.History ->
-                        dev.frost819.newbv.app.ui.screen.personal.HistoryScreen(
-                            viewModel = personalViewModel,
-                            navController = navController,
-                            focusSaver = focusSaver,
-                        )
-                    HomeTopNavItem.ToView ->
-                        dev.frost819.newbv.app.ui.screen.personal.ToViewScreen(
-                            viewModel = personalViewModel,
-                            navController = navController,
-                            focusSaver = focusSaver,
-                        )
-                    // 动态 Tab 已从首页移除；保留分支以穷尽枚举（偏好兼容旧数据）
-                    HomeTopNavItem.Dynamics ->
-                        PopularScreen(
-                            viewModel = viewModel,
-                            navController = navController,
-                            focusSaver = focusSaver,
-                        )
+                tabContentState.SaveableStateProvider(screen) {
+                    when (screen) {
+                        HomeTopNavItem.Recommend ->
+                            RecommendScreen(
+                                viewModel = viewModel,
+                                navController = navController,
+                                focusSaver = focusSaver,
+                                onFocusTopNav = { navFocusRequester.requestFocus() },
+                                onTabBoundary = switchTabAtBoundary,
+                            )
+                        HomeTopNavItem.Popular ->
+                            PopularScreen(
+                                viewModel = viewModel,
+                                navController = navController,
+                                focusSaver = focusSaver,
+                                onTabBoundary = switchTabAtBoundary,
+                            )
+                        HomeTopNavItem.History ->
+                            dev.frost819.newbv.app.ui.screen.personal.HistoryScreen(
+                                viewModel = personalViewModel,
+                                navController = navController,
+                                focusSaver = focusSaver,
+                                onTabBoundary = switchTabAtBoundary,
+                            )
+                        HomeTopNavItem.ToView ->
+                            dev.frost819.newbv.app.ui.screen.personal.ToViewScreen(
+                                viewModel = personalViewModel,
+                                navController = navController,
+                                focusSaver = focusSaver,
+                                onTabBoundary = switchTabAtBoundary,
+                            )
+                        // 动态 Tab 已从首页移除；保留分支以穷尽枚举（偏好兼容旧数据）
+                        HomeTopNavItem.Dynamics ->
+                            PopularScreen(
+                                viewModel = viewModel,
+                                navController = navController,
+                                focusSaver = focusSaver,
+                            )
+                    }
                 }
             }
         }

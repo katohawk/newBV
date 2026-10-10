@@ -95,6 +95,7 @@ private data class FavoriteFocusChange(
  * 4 列网格 + 无限滚动，距离底部 20 条时触发加载更多。
  * 支持从详情页返回后恢复焦点到之前点击的卡片。
  *
+ * @param onTabBoundary 视频行左右边界的 Tab 切换回调；null 保留默认导航。
  * @param onFocusTopNav 删除最后一张卡片后将焦点退回顶部导航。
  */
 @Composable
@@ -103,6 +104,7 @@ fun RecommendScreen(
     viewModel: HomeViewModel,
     navController: NavController,
     focusSaver: FocusSaver,
+    onTabBoundary: ((Int) -> Unit)? = null,
     onFocusTopNav: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -164,6 +166,7 @@ fun RecommendScreen(
     }
 
     TvLazyVerticalGrid(
+        onHorizontalBoundary = onTabBoundary,
         modifier = modifier,
         state = gridState,
         columns = GridCells.Fixed(4),

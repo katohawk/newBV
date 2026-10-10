@@ -26,6 +26,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -66,6 +68,7 @@ import dev.frost819.newbv.data.datastore.LeftNaviItem
  * @param onFocusToContent 聚焦内容区回调，返回是否成功。
  * @param onLogin 登录回调。
  * @param focusSaver 焦点恢复器（由 MainScreen 共享传入）。
+ * @param selectedItemFocusRequester 当前选中导航项的焦点入口，供内容区返回侧栏使用。
  */
 @Composable
 fun LeftNaviContent(
@@ -79,6 +82,7 @@ fun LeftNaviContent(
     onFocusToContent: () -> Boolean,
     onLogin: () -> Unit,
     focusSaver: FocusSaver,
+    selectedItemFocusRequester: FocusRequester? = null,
 ) {
     val focusManager = LocalFocusManager.current
     NavigationRail(
@@ -162,7 +166,13 @@ fun LeftNaviContent(
                 NavigationRailItem(
                     modifier =
                         Modifier
-                            .onFocusChanged {
+                            .then(
+                                if (item == selectedItem && selectedItemFocusRequester != null) {
+                                    Modifier.focusRequester(selectedItemFocusRequester)
+                                } else {
+                                    Modifier
+                                },
+                            ).onFocusChanged {
                                 isFocused = it.hasFocus
                                 // 滑动切换：光标落到导航项上即切换页面，无需按 OK
                                 if (it.hasFocus && item != selectedItem) {

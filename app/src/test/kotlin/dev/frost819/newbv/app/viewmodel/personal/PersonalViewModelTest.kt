@@ -127,6 +127,90 @@ class PersonalViewModelTest {
         return viewModel
     }
 
+    @Test
+    fun `automatic history refresh keeps cached rows until all browsed pages are replaced`() =
+        runTest(testDispatcher) {
+            // Given
+            coEvery { historyRepo.getHistories(0, any()) } returns
+                fakeHistoryData(listOf(fakeHistoryItem(1)), cursor = 100)
+            coEvery { historyRepo.getHistories(100, any()) } returns
+                fakeHistoryData(listOf(fakeHistoryItem(2)), cursor = 0)
+            val vm = createViewModel(autoLoad = false)
+            vm.ensureLoaded(PersonalTopNavItem.History)
+            advanceUntilIdle()
+            vm.loadHistory()
+            advanceUntilIdle()
+            val response = CompletableDeferred<HistoryData>()
+            coEvery { historyRepo.getHistories(0, any()) } coAnswers { response.await() }
+
+            // When
+            vm.refreshHistory(preserveItems = true)
+            runCurrent()
+
+            // Then
+            assertThat(
+                vm.uiState.value.historyItems
+                    .map { it.oid },
+            ).containsExactly(1L, 2L).inOrder()
+            response.complete(fakeHistoryData(listOf(fakeHistoryItem(3)), cursor = 100))
+            advanceUntilIdle()
+            assertThat(
+                vm.uiState.value.historyItems
+                    .map { it.oid },
+            ).containsExactly(3L, 2L).inOrder()
+            assertThat(vm.uiState.value.historyHasMore).isFalse()
+        }
+
+    @Test
+    fun `failed automatic history refresh preserves data and pagination cursor`() =
+        runTest(testDispatcher) {
+            // Given
+            coEvery { historyRepo.getHistories(0, any()) } returns
+                fakeHistoryData(listOf(fakeHistoryItem(1)), cursor = 100)
+            val vm = createViewModel(autoLoad = false)
+            vm.ensureLoaded(PersonalTopNavItem.History)
+            advanceUntilIdle()
+            coEvery { historyRepo.getHistories(0, any()) } throws IllegalStateException("offline")
+            coEvery { historyRepo.getHistories(100, any()) } returns
+                fakeHistoryData(listOf(fakeHistoryItem(2)), cursor = 0)
+
+            // When
+            vm.refreshHistory(preserveItems = true)
+            advanceUntilIdle()
+
+            // Then
+            assertThat(
+                vm.uiState.value.historyItems
+                    .map { it.oid },
+            ).containsExactly(1L)
+            assertThat(vm.uiState.value.historyError).isTrue()
+            vm.loadHistory()
+            advanceUntilIdle()
+            assertThat(
+                vm.uiState.value.historyItems
+                    .map { it.oid },
+            ).containsExactly(1L, 2L).inOrder()
+        }
+
+    @Test
+    fun `automatic watch later refresh retains cached items when request fails`() =
+        runTest(testDispatcher) {
+            // Given
+            coEvery { toViewRepo.getToView(any(), any()) } returns fakeToViewData(listOf(fakeToViewItem(1)))
+            val vm = createViewModel(autoLoad = false)
+            vm.ensureLoaded(PersonalTopNavItem.ToView)
+            advanceUntilIdle()
+            coEvery { toViewRepo.getToView(any(), any()) } throws IllegalStateException("offline")
+
+            // When
+            vm.refreshToView(preserveItems = true)
+            advanceUntilIdle()
+
+            // Then
+            assertThat(vm.toViewItems.map { it.oid }).containsExactly(1L)
+            assertThat(vm.uiState.value.toViewError).isTrue()
+        }
+
     private fun fakeToViewItem(
         aid: Long,
         progress: Int = 100,

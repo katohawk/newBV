@@ -258,22 +258,23 @@ class PersonalViewModel
         private fun invalidate(
             tab: PersonalTopNavItem,
             keepFolders: Boolean = false,
+            preserveItems: Boolean = false,
         ) {
             generations[tab] = generations.getValue(tab) + 1
             jobs.remove(tab)?.cancel()
             loadedTabs.remove(tab)
             when (tab) {
                 PersonalTopNavItem.ToView -> {
-                    toViewItems.clear()
+                    if (!preserveItems) toViewItems.clear()
                     _uiState.update { it.copy(toViewLoading = false, toViewError = false) }
                 }
                 PersonalTopNavItem.History -> {
-                    historyCursor = 0L
+                    if (!preserveItems) historyCursor = 0L
                     _uiState.update {
                         it.copy(
-                            historyItems = emptyList(),
+                            historyItems = if (preserveItems) it.historyItems else emptyList(),
                             historyLoading = false,
-                            historyHasMore = true,
+                            historyHasMore = if (preserveItems) it.historyHasMore else true,
                             historyError = false,
                         )
                     }
@@ -342,34 +343,63 @@ class PersonalViewModel
             }
         }
 
-        /** 取消在途请求并刷新稍后再看。 */
-        fun refreshToView() {
-            invalidate(PersonalTopNavItem.ToView)
+        /** 取消在途请求并刷新稍后再看；[preserveItems] 在自动刷新期间保留旧列表与滚动位置。 */
+        fun refreshToView(preserveItems: Boolean = false) {
+            invalidate(PersonalTopNavItem.ToView, preserveItems = preserveItems)
             loadToView()
         }
 
         /** 按 cursor 加载下一页历史；末页后跳过。 */
         fun loadHistory() {
-            load(PersonalTopNavItem.History, _uiState.value.historyHasMore) { generation ->
-                val data =
+            loadHistoryPage()
+        }
+
+        private fun loadHistoryPage(replaceCount: Int? = null) {
+            load(PersonalTopNavItem.History, replaceCount != null || _uiState.value.historyHasMore) { generation ->
+                val (items, cursor) =
                     withTimeout(LOAD_TIMEOUT_MS) {
-                        historyRepository.getHistories(cursor = historyCursor, preferApiType = prefApiType())
+                        var data =
+                            historyRepository.getHistories(
+                                cursor = if (replaceCount != null) 0L else historyCursor,
+                                preferApiType = prefApiType(),
+                            )
+                        val items = data.data.toMutableList()
+                        // 自动刷新补齐已浏览的页数，避免替换成第一页后把深处的焦点挤回顶部。
+                        while (replaceCount != null &&
+                            items.size < replaceCount &&
+                            data.cursor != 0L &&
+                            data.data.isNotEmpty()
+                        ) {
+                            val previousCursor = data.cursor
+                            data =
+                                historyRepository.getHistories(cursor = previousCursor, preferApiType = prefApiType())
+                            items.addAll(data.data)
+                            if (data.cursor == previousCursor) break
+                        }
+                        items to data.cursor
                     }
                 if (!isCurrent(PersonalTopNavItem.History, generation)) return@load
-                historyCursor = data.cursor
+                historyCursor = cursor
                 _uiState.update {
                     it.copy(
-                        historyItems = it.historyItems + data.data,
-                        historyHasMore = data.cursor != 0L,
+                        historyItems = if (replaceCount != null) items else it.historyItems + items,
+                        historyHasMore = cursor != 0L,
                     )
                 }
             }
         }
 
-        /** 取消在途请求并从第一页刷新历史。 */
-        fun refreshHistory() {
-            invalidate(PersonalTopNavItem.History)
-            loadHistory()
+        /** 取消在途请求并刷新历史；[preserveItems] 保留旧列表，刷新至原已加载的条数以保持纵向位置。 */
+        fun refreshHistory(preserveItems: Boolean = false) {
+            val replaceCount =
+                if (preserveItems) {
+                    _uiState.value.historyItems.size
+                        .coerceAtLeast(1)
+                } else {
+                    null
+                }
+            invalidate(PersonalTopNavItem.History, preserveItems = preserveItems)
+            loadHistoryPage(replaceCount)
         }
 
         /** 加载收藏夹目录，并在同一任务内加载首个收藏夹第一页。 */
@@ -466,11 +496,14 @@ class PersonalViewModel
             loadFollowingSeasons()
         }
 
-        /** 刷新指定可见 Tab。 */
-        fun refresh(tab: PersonalTopNavItem) {
+        /** 刷新指定可见 [tab]；[preserveItems] 让历史/稍后再看自动刷新时保持列表与焦点。 */
+        fun refresh(
+            tab: PersonalTopNavItem,
+            preserveItems: Boolean = false,
+        ) {
             when (tab) {
-                PersonalTopNavItem.ToView -> refreshToView()
-                PersonalTopNavItem.History -> refreshHistory()
+                PersonalTopNavItem.ToView -> refreshToView(preserveItems)
+                PersonalTopNavItem.History -> refreshHistory(preserveItems)
                 PersonalTopNavItem.Favorite -> refreshFavorite()
                 PersonalTopNavItem.FollowingSeason -> refreshFollowingSeasons()
             }

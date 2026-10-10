@@ -110,6 +110,52 @@ class SearchInputViewModelTest {
     }
 
     @Test
+    fun `entering search refreshes hotwords and local history`() =
+        runTest(testDispatcher) {
+            // Given
+            advanceUntilIdle()
+            coEvery { searchRepo.getSearchHotwords(any(), any()) } returns listOf(fakeHotword("新热词"))
+            coEvery { historyRepo.getHistories(any()) } returns listOf(fakeHistory("新搜索"))
+
+            // When
+            viewModel.refresh()
+            advanceUntilIdle()
+
+            // Then
+            assertThat(
+                viewModel.uiState.value.hotwords
+                    .single()
+                    .keyword,
+            ).isEqualTo("新热词")
+            assertThat(
+                viewModel.uiState.value.histories
+                    .single()
+                    .keyword,
+            ).isEqualTo("新搜索")
+        }
+
+    @Test
+    fun `search refresh still updates history when hotwords fail`() =
+        runTest(testDispatcher) {
+            // Given
+            advanceUntilIdle()
+            coEvery { searchRepo.getSearchHotwords(any(), any()) } throws IllegalStateException("offline")
+            coEvery { historyRepo.getHistories(any()) } returns listOf(fakeHistory("本地搜索"))
+
+            // When
+            viewModel.refresh()
+            advanceUntilIdle()
+
+            // Then
+            assertThat(viewModel.uiState.value.hotwordsError).isTrue()
+            assertThat(
+                viewModel.uiState.value.histories
+                    .single()
+                    .keyword,
+            ).isEqualTo("本地搜索")
+        }
+
+    @Test
     fun `init loads hotwords and histories`() =
         runTest(testDispatcher) {
             advanceUntilIdle()

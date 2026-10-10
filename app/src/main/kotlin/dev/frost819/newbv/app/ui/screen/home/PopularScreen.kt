@@ -36,6 +36,8 @@ import kotlinx.coroutines.flow.filter
  * 热门视频列表页。
  *
  * 4 列网格 + 无限滚动，距离底部 20 条时触发加载更多。
+ *
+ * @param onTabBoundary 视频行左右边界的 Tab 切换回调；null 保留默认导航。
  */
 @Composable
 fun PopularScreen(
@@ -43,6 +45,7 @@ fun PopularScreen(
     viewModel: HomeViewModel,
     navController: NavController,
     focusSaver: FocusSaver,
+    onTabBoundary: ((Int) -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     val gridState = rememberLazyGridState()
@@ -64,6 +67,7 @@ fun PopularScreen(
     }
 
     TvLazyVerticalGrid(
+        onHorizontalBoundary = onTabBoundary,
         modifier = modifier,
         state = gridState,
         columns = GridCells.Fixed(4),

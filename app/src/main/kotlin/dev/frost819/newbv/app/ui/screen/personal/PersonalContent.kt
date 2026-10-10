@@ -60,7 +60,7 @@ fun PersonalContent(
     var focusOnContent by remember { mutableStateOf(false) }
     val state by viewModel.uiState.collectAsState()
     LaunchedEffect(selectedTab, state.currentUid, state.isLogin, isActive) {
-        if (isActive) viewModel.ensureLoaded(selectedTab)
+        if (isActive) viewModel.refresh(selectedTab, preserveItems = true)
     }
 
     val reorderedItems =

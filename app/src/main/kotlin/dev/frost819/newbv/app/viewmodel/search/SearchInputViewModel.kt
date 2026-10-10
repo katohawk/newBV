@@ -106,6 +106,12 @@ class SearchInputViewModel
             loadHotwords()
         }
 
+        /** 进入搜索页时刷新热搜与本地搜索历史。 */
+        fun refresh() {
+            refreshHotwords()
+            loadHistories()
+        }
+
         private fun loadHotwords() {
             if (_uiState.value.isLoadingHotwords) return
             _uiState.update { it.copy(isLoadingHotwords = true, hotwordsError = false) }

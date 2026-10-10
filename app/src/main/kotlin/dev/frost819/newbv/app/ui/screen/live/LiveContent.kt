@@ -68,6 +68,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
  * 整体为单 [TvLazyVerticalGrid]（4 列），关注和分区为全宽 item（内含横向 [LazyRow]），
  * 推荐信息流为常规网格 item，支持无限滚动。
  *
+ * @param isActive 当前左侧栏选中的页面；进入时自动刷新。
  * @param navFocusRequester 内容区入口焦点请求器（由 MainScreen 传入）。
  * @param navController 导航控制器。
  * @param focusSaver 焦点恢复器（由 MainScreen 共享传入）。
@@ -77,9 +78,18 @@ fun LiveContent(
     navFocusRequester: FocusRequester,
     navController: NavController,
     focusSaver: FocusSaver,
+    isActive: Boolean = true,
     viewModel: LiveHomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
+
+    LaunchedEffect(isActive) {
+        if (isActive) {
+            if (!state.followLoading) viewModel.loadFollowLive()
+            if (!state.areaLoading) viewModel.loadAreaList()
+            if (!state.recommendLoading) viewModel.loadRecommend()
+        }
+    }
     val gridState = rememberLazyGridState()
 
     LaunchedEffect(gridState) {

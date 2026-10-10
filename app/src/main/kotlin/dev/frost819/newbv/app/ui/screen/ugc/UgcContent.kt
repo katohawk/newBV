@@ -80,6 +80,7 @@ enum class UgcTabItem(
  * 顶部 Tab 切换分区，内容区为视频网格 + 无限滚动。
  * 菜单键刷新当前分区数据。
  *
+ * @param isActive 当前左侧栏选中的页面；进入时自动刷新。
  * @param navFocusRequester 顶部 Tab 的焦点请求器。
  * @param navController 导航控制器。
  * @param focusSaver 焦点恢复器（由 MainScreen 共享传入）。
@@ -90,11 +91,16 @@ fun UgcContent(
     navFocusRequester: FocusRequester,
     navController: NavController,
     focusSaver: FocusSaver,
+    isActive: Boolean = true,
     viewModel: UgcViewModel = hiltViewModel(),
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(UgcTabItem.Douga) }
     var focusOnContent by remember { mutableStateOf(false) }
     val uiState by viewModel.uiState.collectAsState()
+
+    LaunchedEffect(isActive) {
+        if (isActive && !uiState.loading) viewModel.refresh()
+    }
 
     Material3Scaffold(
         topBar = {

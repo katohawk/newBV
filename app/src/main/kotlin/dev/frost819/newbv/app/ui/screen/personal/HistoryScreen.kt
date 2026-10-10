@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.filter
  * @param viewModel 个人页 ViewModel。
  * @param navController 导航控制器。
  * @param focusSaver 焦点恢复器（由 MainScreen 共享传入）。
+ * @param onTabBoundary 视频行左右边界的 Tab 切换回调；null 保留默认导航。
  */
 @Composable
 fun HistoryScreen(
@@ -50,6 +51,7 @@ fun HistoryScreen(
     viewModel: PersonalViewModel,
     navController: NavController,
     focusSaver: FocusSaver,
+    onTabBoundary: ((Int) -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     val gridState = rememberLazyGridState()
@@ -84,6 +86,7 @@ fun HistoryScreen(
     }
 
     TvLazyVerticalGrid(
+        onHorizontalBoundary = onTabBoundary,
         modifier = modifier,
         state = gridState,
         columns = GridCells.Fixed(4),

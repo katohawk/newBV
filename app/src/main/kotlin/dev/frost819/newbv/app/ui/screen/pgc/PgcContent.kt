@@ -73,6 +73,7 @@ enum class PgcTabItem(
  * 顶部 Tab 切换分区，内容区上方为轮播图，下方为番剧/影视卡片网格 + 无限滚动。
  * 菜单键刷新当前分区数据。
  *
+ * @param isActive 当前左侧栏选中的页面；进入时自动刷新。
  * @param navFocusRequester 顶部 Tab 的焦点请求器。
  * @param navController 导航控制器。
  * @param focusSaver 焦点恢复器（由 MainScreen 共享传入）。
@@ -83,11 +84,16 @@ fun PgcContent(
     navFocusRequester: FocusRequester,
     navController: NavController,
     focusSaver: FocusSaver,
+    isActive: Boolean = true,
     viewModel: PgcViewModel = hiltViewModel(),
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(PgcTabItem.Anime) }
     var focusOnContent by remember { mutableStateOf(false) }
     val uiState by viewModel.uiState.collectAsState()
+
+    LaunchedEffect(isActive) {
+        if (isActive && !uiState.loading && !uiState.carouselLoading) viewModel.refresh()
+    }
 
     Material3Scaffold(
         topBar = {

@@ -13,9 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -23,8 +21,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.tooling.preview.Preview
@@ -47,6 +45,7 @@ import dev.frost819.newbv.core.focus.touchClickable
  * @param isLargePadding 内容区未获焦点时使用较大内边距。
  * @param onSelectedChanged Tab 焦点切换回调。
  * @param onClick Tab 点击回调。
+ * @param selectedTabFocusRequester 当前选中 Tab 的焦点入口，用于内容为空时回退。
  */
 @Composable
 fun TopNav(
@@ -56,14 +55,11 @@ fun TopNav(
     isLargePadding: Boolean,
     onSelectedChanged: (TopNavItem) -> Unit = {},
     onClick: (TopNavItem) -> Unit = {},
+    selectedTabFocusRequester: FocusRequester? = null,
 ) {
-    val focusRequester = remember { FocusRequester() }
+    val defaultFocusRequester = remember { FocusRequester() }
+    val focusRequester = selectedTabFocusRequester ?: defaultFocusRequester
 
-    var selectedTabIndex by remember { mutableIntStateOf(selectedIndex) }
-
-    LaunchedEffect(selectedIndex) {
-        selectedTabIndex = selectedIndex
-    }
     val verticalPadding by animateDpAsState(
         targetValue = if (isLargePadding) 12.dp else 6.dp,
         label = "top-nav-padding",
@@ -79,17 +75,19 @@ fun TopNav(
         TabRow(
             modifier =
                 Modifier
-                    .focusRestorer(focusRequester),
-            selectedTabIndex = selectedTabIndex,
+                    .focusProperties {
+                        onEnter = { focusRequester.requestFocus() }
+                    },
+            selectedTabIndex = selectedIndex,
             separator = { Spacer(modifier = Modifier.width(12.dp)) },
         ) {
             items.forEachIndexed { index, tab ->
                 NavItemTab(
-                    modifier = if (index == 0) Modifier.focusRequester(focusRequester) else Modifier,
+                    modifier =
+                        if (index == selectedIndex) Modifier.focusRequester(focusRequester) else Modifier,
                     topNavItem = tab,
-                    selected = index == selectedTabIndex,
+                    selected = index == selectedIndex,
                     onFocus = {
-                        selectedTabIndex = index
                         onSelectedChanged(tab)
                     },
                     onClick = { onClick(tab) },
