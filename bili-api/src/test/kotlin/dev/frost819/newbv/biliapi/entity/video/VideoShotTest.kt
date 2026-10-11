@@ -41,6 +41,22 @@ class VideoShotTest {
             coVerify(exactly = 1) { BiliHttpApi.download(any()) }
         }
 
+    @Test fun `protocol relative index and sprite URLs use HTTPS`() =
+        runTest {
+            // Given: 视频截图接口实际返回省略协议的 CDN 地址。
+            coEvery { BiliHttpApi.download("https://test/index") } returns byteArrayOf(0, 0, 0, 10, 0, 20)
+            val metadata =
+                metadata().copy(
+                    pvData = "//test/index",
+                    image = listOf("//test/1.jpg", "https://test/2.jpg"),
+                )
+            // When
+            val shot = requireNotNull(VideoShot.fromVideoShot(metadata))
+            // Then
+            assertThat(shot.imageUrls).containsExactly("https://test/1.jpg", "https://test/2.jpg").inOrder()
+            coVerify(exactly = 1) { BiliHttpApi.download("https://test/index") }
+        }
+
     @Test fun `missing index returns null without any download`() =
         runTest {
             // Given / When

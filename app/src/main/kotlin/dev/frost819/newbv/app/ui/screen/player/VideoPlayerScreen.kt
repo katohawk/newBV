@@ -38,6 +38,7 @@ import dev.frost819.newbv.app.ui.navigation.navigateToVideoDetailFromPlayer
 import dev.frost819.newbv.app.ui.state.player.PlayerState
 import dev.frost819.newbv.app.util.ToastUtils
 import dev.frost819.newbv.app.util.VideoShotImageCache
+import dev.frost819.newbv.app.util.spriteIndex
 import dev.frost819.newbv.app.viewmodel.comment.CommentViewModel
 import dev.frost819.newbv.app.viewmodel.player.DanmakuViewModel
 import dev.frost819.newbv.app.viewmodel.player.PlayerMenuViewModel
@@ -52,6 +53,7 @@ import dev.frost819.newbv.danmaku.util.bitmapMask
 import dev.frost819.newbv.danmaku.util.calculateMaskDelay
 import dev.frost819.newbv.danmaku.util.createDanmakuMaskBitmap
 import dev.frost819.newbv.player.BvVideoPlayer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
@@ -108,6 +110,22 @@ fun VideoPlayerScreen(
     val videoShotCache = remember(uiState.videoShot, context) { VideoShotImageCache(context) }
     DisposableEffect(videoShotCache) {
         onDispose { videoShotCache.clear() }
+    }
+
+    // 在播放期间预热当前 Sprite，拖动时直接复用；切集或离开播放器才释放缓存。
+    val videoShot = uiState.videoShot
+    val currentShotIndex = videoShot?.spriteIndex((seekerState.value.currentTime / 1000).toInt())
+    LaunchedEffect(videoShotCache, currentShotIndex) {
+        val shot = videoShot ?: return@LaunchedEffect
+        val index = currentShotIndex ?: return@LaunchedEffect
+        videoShotCache.retainWindow(index)
+        try {
+            videoShotCache.getOrLoadImage(index, shot.imageUrls[index])
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            logger.warn { "Preload video shot failed: $error" }
+        }
     }
 
     // 合并 UI 状态（包含 videoList 和 relatedVideos）

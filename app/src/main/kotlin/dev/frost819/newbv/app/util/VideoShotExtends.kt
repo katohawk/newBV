@@ -168,7 +168,7 @@ class VideoShotImageCache(
         memoryCache.put(index, bitmap)
     }
 
-    /** 预览关闭或切集时取消请求并释放全部缓存；同实例可以再次使用。 */
+    /** 离开播放器或切集时取消请求并释放全部缓存；同实例可以再次使用。 */
     fun clear() {
         synchronized(tasks) {
             generation++

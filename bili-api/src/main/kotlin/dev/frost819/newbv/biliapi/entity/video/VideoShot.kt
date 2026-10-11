@@ -33,7 +33,7 @@ data class VideoShot(
                     return@withContext null
                 }
                 try {
-                    val timeBinary = BiliHttpApi.download(videoShot.pvData ?: return@withContext null)
+                    val timeBinary = BiliHttpApi.download((videoShot.pvData ?: return@withContext null).toHttpsUrl())
                     if (timeBinary.size < 4 || timeBinary.size % 2 != 0) return@withContext null
                     val times =
                         DataInputStream(ByteArrayInputStream(timeBinary)).use { input ->
@@ -43,7 +43,7 @@ data class VideoShot(
                     if (times.zipWithNext().any { (a, b) -> a > b }) return@withContext null
                     VideoShot(
                         times = times,
-                        imageUrls = videoShot.image,
+                        imageUrls = videoShot.image.map { it.toHttpsUrl() },
                         imageCountX = videoShot.imgXLen,
                         imageCountY = videoShot.imgYLen,
                         imageWidth = videoShot.imgXSize,
@@ -57,3 +57,5 @@ data class VideoShot(
             }
     }
 }
+
+private fun String.toHttpsUrl(): String = if (startsWith("//")) "https:$this" else this

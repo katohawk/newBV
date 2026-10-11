@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,7 +28,6 @@ import dev.frost819.newbv.app.util.spriteFrame
 import dev.frost819.newbv.app.util.spriteIndex
 import dev.frost819.newbv.biliapi.entity.video.VideoShot
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -60,10 +58,8 @@ fun VideoShot(
     var sheet by remember(videoShot, sheetIndex) { mutableStateOf<android.graphics.Bitmap?>(null) }
     val spriteFrame = sheet?.let { videoShot.spriteFrame(seconds, it) }
 
-    DisposableEffect(imageCache) { onDispose { imageCache.clear() } }
     LaunchedEffect(videoShot, sheetIndex) {
         val index = sheetIndex ?: return@LaunchedEffect
-        delay(16)
         imageCache.retainWindow(index)
         try {
             sheet = imageCache.getOrLoadImage(index, videoShot.imageUrls[index])
