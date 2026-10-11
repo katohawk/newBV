@@ -268,6 +268,7 @@ fun LivePlayerController(
         BVTheme(
             themeMode = ThemeMode.Dark,
             density = LocalDensity.current.density,
+            backgroundColor = Color.Black,
         ) {
             content()
 

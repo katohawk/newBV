@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import androidx.tv.material3.SurfaceDefaults
 import androidx.compose.material3.MaterialTheme as CommonMaterialTheme
 import androidx.compose.material3.Surface as CommonSurface
 import androidx.compose.material3.darkColorScheme as commonDark
@@ -36,6 +37,7 @@ import androidx.tv.material3.lightColorScheme as tvLight
  *
  * @param themeMode 主题模式（跟随系统 / 深色 / 浅色）。
  * @param density 屏幕密度（TV 场景通常为 2.0）。
+ * @param backgroundColor 表面背景色；播放器使用纯黑，省略时沿用主题表面色。
  * @param content 主题包裹的内容。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -43,6 +45,7 @@ import androidx.tv.material3.lightColorScheme as tvLight
 fun BVTheme(
     themeMode: ThemeMode = ThemeMode.FollowSystem,
     density: Float = 1f,
+    backgroundColor: Color? = null,
     content: @Composable () -> Unit,
 ) {
     val fontScale = LocalDensity.current.fontScale
@@ -140,7 +143,10 @@ fun BVTheme(
                 LocalDensity provides Density(density = density, fontScale = fontScale),
             ) {
                 CommonSurface(color = Color.Transparent) {
-                    TvSurface(shape = RoundedCornerShape(0.dp)) {
+                    TvSurface(
+                        shape = RoundedCornerShape(0.dp),
+                        colors = SurfaceDefaults.colors(containerColor = backgroundColor ?: tvColorScheme.surface),
+                    ) {
                         content()
                     }
                 }

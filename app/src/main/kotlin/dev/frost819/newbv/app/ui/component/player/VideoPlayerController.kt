@@ -475,6 +475,7 @@ fun VideoPlayerController(
         BVTheme(
             themeMode = ThemeMode.Dark,
             density = LocalDensity.current.density,
+            backgroundColor = Color.Black,
         ) {
             // 视频画面 + 弹幕层
             content()

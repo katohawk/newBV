@@ -29,6 +29,8 @@ fun BvVideoPlayer(
             modifier = modifier.fillMaxSize(),
             factory = { ctx ->
                 PlayerView(ctx).apply {
+                    setBackgroundColor(android.graphics.Color.BLACK)
+                    setShutterBackgroundColor(android.graphics.Color.BLACK)
                     player = videoPlayer.mPlayer
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
                     useController = false
