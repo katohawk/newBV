@@ -8,6 +8,8 @@
 .externalNativeBuild/
 .cxx/
 /app/release/
+/outputs/
+/bili-api-grpc/bin/
 
 # Gradle
 .gradle/
