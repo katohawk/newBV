@@ -145,7 +145,12 @@ fun BVTheme(
                 CommonSurface(color = Color.Transparent) {
                     TvSurface(
                         shape = RoundedCornerShape(0.dp),
-                        colors = SurfaceDefaults.colors(containerColor = backgroundColor ?: tvColorScheme.surface),
+                        // 自定义黑底无法自动匹配内容色，显式使用当前主题文字色。
+                        colors =
+                            SurfaceDefaults.colors(
+                                containerColor = backgroundColor ?: tvColorScheme.surface,
+                                contentColor = tvColorScheme.onSurface,
+                            ),
                     ) {
                         content()
                     }

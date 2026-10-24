@@ -28,6 +28,21 @@ class PlayerBackgroundTest {
     @Test
     fun narrowVideoHasBlackLeftAndRightBars() = checkBars(0.75f, vertical = false)
 
+    @Test
+    fun blackPlayerSurfaceUsesDarkThemeContentColorInsideLightTheme() {
+        var contentColor = Color.Unspecified
+        var expectedColor = Color.Unspecified
+        composeRule.setContent {
+            BVTheme(themeMode = ThemeMode.Light) {
+                BVTheme(themeMode = ThemeMode.Dark, backgroundColor = Color.Black) {
+                    contentColor = androidx.tv.material3.LocalContentColor.current
+                    expectedColor = androidx.tv.material3.MaterialTheme.colorScheme.onSurface
+                }
+            }
+        }
+        composeRule.runOnIdle { assertThat(contentColor).isEqualTo(expectedColor) }
+    }
+
     private fun checkBars(
         ratio: Float,
         vertical: Boolean,

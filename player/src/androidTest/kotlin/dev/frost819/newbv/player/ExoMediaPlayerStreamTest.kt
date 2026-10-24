@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertThat
 import dev.frost819.newbv.player.impl.exo.ExoMediaPlayer
+import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -26,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference
 class ExoMediaPlayerStreamTest {
     private lateinit var context: Context
     private lateinit var player: ExoMediaPlayer
+    private lateinit var httpClient: OkHttpClient
 
     private companion object {
         private const val TEST_VIDEO_URI = "asset:///test_video.mp4"
@@ -94,6 +96,7 @@ class ExoMediaPlayerStreamTest {
     @Before
     fun setup() {
         context = ApplicationProvider.getApplicationContext()
+        httpClient = OkHttpUtil.generateCustomSslOkHttpClient(context)
         player =
             runOnMain {
                 ExoMediaPlayer(
@@ -104,6 +107,7 @@ class ExoMediaPlayerStreamTest {
                             referer = "https://www.bilibili.com",
                             enableSoftwareVideoDecoder = false,
                         ),
+                    httpClient = httpClient,
                 )
             }
         runOnMainVoid { player.setOptions() }

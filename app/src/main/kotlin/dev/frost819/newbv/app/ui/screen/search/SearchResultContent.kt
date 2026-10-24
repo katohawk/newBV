@@ -100,7 +100,7 @@ private val searchTypeColumns =
  * 搜索结果页内容。
  *
  * TopNav 切换 5 类结果，网格无限滚动加载，菜单键打开筛选弹窗。
- * 进入页面时自动根据 keyword 触发搜索。
+ * 搜索由 ViewModel 初始化加载，导航返回时保留已有结果。
  */
 @Composable
 fun SearchResultContent(
@@ -108,7 +108,6 @@ fun SearchResultContent(
     viewModel: SearchResultViewModel,
     keyword: String,
     navController: NavController,
-    initialSearchType: SearchType? = null,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val watchLaterViewModel: WatchLaterViewModel = hiltViewModel()
@@ -136,12 +135,6 @@ fun SearchResultContent(
 
     BackHandler(focusOnContent) {
         runCatching { tabRowFocusRequester.requestFocus() }
-    }
-
-    LaunchedEffect(keyword, initialSearchType) {
-        if (keyword.isNotBlank()) {
-            viewModel.search(keyword, initialSearchType)
-        }
     }
 
     LaunchedEffect(gridState) {

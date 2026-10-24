@@ -24,7 +24,12 @@ class BvVideoPlayerTest {
     fun playerBackgroundAndShutterAreBlack() {
         lateinit var player: ExoMediaPlayer
         composeRule.runOnUiThread {
-            player = ExoMediaPlayer(composeRule.activity, VideoPlayerOptions())
+            player =
+                ExoMediaPlayer(
+                    composeRule.activity,
+                    VideoPlayerOptions(),
+                    OkHttpUtil.generateCustomSslOkHttpClient(composeRule.activity),
+                )
         }
         try {
             composeRule.setContent { BvVideoPlayer(videoPlayer = player) }
