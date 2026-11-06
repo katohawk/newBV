@@ -21,6 +21,7 @@ import dev.frost819.newbv.biliapi.grpc.utils.handleGrpcException
 import dev.frost819.newbv.biliapi.http.BiliHttpApi
 import dev.frost819.newbv.biliapi.http.entity.danmaku.DanmakuData
 import kotlinx.coroutines.CancellationException
+import dev.frost819.newbv.biliapi.http.entity.danmaku.toDanmakuDataList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -412,7 +413,7 @@ class VideoPlayRepository(
                                 },
                             ) ?: throw IllegalStateException("Danmaku stub is not initialized")
                         }.onFailure { handleGrpcException(it) }.getOrThrow()
-                    reply.elemsList.map { DanmakuData.fromDanmakuElem(it) }
+                    reply.toDanmakuDataList()
                 }
         }
 
@@ -434,9 +435,13 @@ class VideoPlayRepository(
                 ApiType.Web -> DanmakuMaskType.WebMask
                 ApiType.App -> DanmakuMaskType.MobMask
             }
-        // 直接拿流，不缓冲到 ByteArray
-        val maskStream = BiliHttpApi.downloadAsStream(maskUrl)
-        return DanmakuMask.fromStream(maskStream, danmakuMaskType)
+        // 蒙版流是阻塞式 InputStream，且解析要按段做 gzip 解压（纯 CPU + 阻塞读），
+        // 统一切到 IO 线程，保证调用方可在主线程安全调用而不卡 UI
+        return withContext(Dispatchers.IO) {
+            // 直接拿流，不缓冲到 ByteArray
+            val maskStream = BiliHttpApi.downloadAsStream(maskUrl)
+            DanmakuMask.fromStream(maskStream, danmakuMaskType)
+        }
     }
 
     suspend fun getVideoShot(

@@ -2,7 +2,6 @@ package dev.frost819.newbv.biliapi.http
 
 import bilibili.community.service.dm.v1.DmSegMobileReply
 import bilibili.community.service.dm.v1.DmWebViewReply
-import com.tfowl.ktor.client.plugins.JsoupPlugin
 import dev.frost819.newbv.biliapi.entity.SpiData
 import dev.frost819.newbv.biliapi.entity.SpiResult
 import dev.frost819.newbv.biliapi.entity.pgc.PgcType
@@ -10,7 +9,10 @@ import dev.frost819.newbv.biliapi.http.BiliHttpApi.getRegionDynamic
 import dev.frost819.newbv.biliapi.http.entity.BiliResponse
 import dev.frost819.newbv.biliapi.http.entity.BiliResponseWithoutData
 import dev.frost819.newbv.biliapi.http.entity.danmaku.DanmakuData
+import dev.frost819.newbv.biliapi.http.entity.danmaku.DanmakuFilterRule
+import dev.frost819.newbv.biliapi.http.entity.danmaku.DanmakuFilterRuleData
 import dev.frost819.newbv.biliapi.http.entity.danmaku.DanmakuResponse
+import dev.frost819.newbv.biliapi.http.entity.danmaku.toDanmakuDataList
 import dev.frost819.newbv.biliapi.http.entity.dynamic.DynamicData
 import dev.frost819.newbv.biliapi.http.entity.history.HistoryData
 import dev.frost819.newbv.biliapi.http.entity.home.RcmdIndexData
@@ -104,9 +106,44 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
-import org.jsoup.nodes.Document
 import java.io.InputStream
 import javax.xml.parsers.DocumentBuilderFactory
+
+/**
+ * 从 PGC 页面 HTML 中提取 `__INITIAL_STATE__` JSON。
+ *
+ * 不使用 HTML 解析器：jsoup 等库在静态初始化时调用 API 26+ 的
+ * `ThreadLocal.withInitial`，在 Android 7.x（API 25）会抛 `NoSuchMethodError`。
+ * PGC 页面的 SSR 数据结构固定，直接按 `__INITIAL_STATE__=` 标记截取即可。
+ *
+ * @param html PGC 页面 HTML
+ * @return `__INITIAL_STATE__` 对应的 JSON 字符串
+ * @throws IllegalStateException 页面中找不到 `__INITIAL_STATE__` 或截取结果为空
+ */
+internal fun extractPgcInitialStateJson(html: String): String {
+    val marker = "__INITIAL_STATE__="
+    val markerIndex = html.indexOf(marker)
+    check(markerIndex >= 0) { "initial state data cannot be found" }
+
+    val jsonStart = markerIndex + marker.length
+    val functionEnd = html.indexOf(";(function()", jsonStart)
+    val scriptEnd = html.indexOf("</script>", jsonStart)
+    val jsonEnd =
+        when {
+            functionEnd >= 0 -> functionEnd
+            scriptEnd >= 0 -> scriptEnd
+            else -> html.length
+        }
+
+    val dataJson =
+        html
+            .substring(jsonStart, jsonEnd)
+            .trim()
+            .trimEnd(';')
+            .trim()
+    check(dataJson.isNotEmpty()) { "initial state data is empty" }
+    return dataJson
+}
 
 @Suppress("SpellCheckingInspection")
 object BiliHttpApi {
@@ -247,7 +284,6 @@ object BiliHttpApi {
                 connectTimeoutMillis = CONNECT_TIMEOUT_MS
                 socketTimeoutMillis = SOCKET_TIMEOUT_MS
             }
-            install(JsoupPlugin)
             defaultRequest {
                 url {
                     host = endPoint
@@ -506,7 +542,7 @@ object BiliHttpApi {
                     parameter("segment_index", segmentIndex)
                 }.readRawBytes()
         return withContext(Dispatchers.Default) {
-            DmSegMobileReply.parseFrom(bytes).elemsList.map { DanmakuData.fromDanmakuElem(it) }
+            DmSegMobileReply.parseFrom(bytes).toDanmakuDataList()
         }
     }
 
@@ -536,6 +572,30 @@ object BiliHttpApi {
                 }.readRawBytes()
         return DmWebViewReply.parseFrom(bytes)
     }
+
+    /**
+     * 获取用户云端弹幕屏蔽规则（关键词 / 正则 / 用户）。
+     *
+     * 端点：GET /x/dm/filter/user（无 query 参数，非 WBI 端点）
+     * 鉴权：SESSDATA Cookie（injectCookies）；未登录返回 code=-101，由调用方降级为不使用云端规则。
+     *
+     * 真机实测响应样例（2026-10）：
+     * ```json
+     * {"code":0,"message":"0","ttl":1,"data":{
+     *   "rule":[
+     *     {"id":101,"mid":123456,"type":0,"filter":"关键词","comment":"","ctime":1700000000,"mtime":1700000000},
+     *     {"id":102,"mid":123456,"type":2,"filter":"5254a244","comment":"","ctime":1700000000,"mtime":1700000000}
+     *   ],
+     *   "toast":"已成功同步10条屏蔽词","ver":123}}
+     * ```
+     * `type`：0=关键词、1=正则、2=用户（`filter` 为 UID 的 crc32 hex，8 位小写）。
+     */
+    suspend fun getDanmakuFilterRules(): List<DanmakuFilterRule> =
+        client
+            .get("/x/dm/filter/user")
+            .body<BiliResponse<DanmakuFilterRuleData>>()
+            .getResponseData()
+            .rule
 
     /**
      * 获取动态列表
@@ -1842,24 +1902,15 @@ object BiliHttpApi {
     /** 获取番剧首页数据 */
     suspend fun getPgcWebInitialStateData(pgcType: PgcType): PgcWebInitialStateData {
         val path = pgcType.name.lowercase()
-        val htmlDocuments = client.get("https://www.bilibili.com/$path").body<Document>()
-
-        val dataScriptTagContent =
-            htmlDocuments
-                .body()
-                .select("script")
-                .find {
-                    it.html().contains("__INITIAL_STATE__")
-                }?.html() ?: throw IllegalStateException("initial state data cannot be null")
-        val dataJson =
-            dataScriptTagContent.split("__INITIAL_STATE__=", ";(function()")[1]
-        val initinalData =
+        val html = client.get("https://www.bilibili.com/$path").bodyAsText()
+        val dataJson = extractPgcInitialStateJson(html)
+        val initialData =
             runCatching {
                 json.decodeFromString<PgcWebInitialStateData>(dataJson)
             }.onFailure {
                 println("parse initial state data failed: ${it.stackTraceToString()}")
             }.getOrNull() ?: throw IllegalStateException("parse initial state data failed")
-        return initinalData
+        return initialData
     }
 
     /**

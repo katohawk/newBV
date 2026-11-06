@@ -3,16 +3,16 @@ package dev.frost819.newbv.app.viewmodel.player
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kuaishou.akdanmaku.DanmakuConfig
 import com.kuaishou.akdanmaku.data.DanmakuItemData
+import com.kuaishou.akdanmaku.ecs.component.filter.TextColorFilter
 import com.kuaishou.akdanmaku.ecs.component.filter.TypeFilter
 import com.kuaishou.akdanmaku.render.SimpleRenderer
 import com.kuaishou.akdanmaku.ui.DanmakuPlayer
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.frost819.newbv.app.data.danmaku.DanmakuFilterRepository
 import dev.frost819.newbv.app.ui.action.player.DanmakuSettingAction
 import dev.frost819.newbv.biliapi.entity.ApiType
 import dev.frost819.newbv.biliapi.entity.danmaku.DanmakuMask
@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -72,6 +73,7 @@ class DanmakuViewModel
     @Inject
     constructor(
         private val videoPlayRepository: VideoPlayRepository,
+        private val danmakuFilterRepository: DanmakuFilterRepository,
     ) : ViewModel() {
         private val logger = Loggers.get("DanmakuViewModel")
 
@@ -92,14 +94,13 @@ class DanmakuViewModel
         private val renderingAllowed = MutableStateFlow(true)
         private var engineRenderingEnabled = true
 
-        /** 后台转换调度器，单元测试替换为可控调度器。 */
-        internal var conversionDispatcher: CoroutineDispatcher = Dispatchers.Default
 
         /** 蒙版流读取调度器，单元测试替换为可控调度器。 */
         internal var maskFetchDispatcher: CoroutineDispatcher = Dispatchers.IO
 
         private var danmakuConfig = DanmakuConfig()
         private val danmakuTypeFilter = TypeFilter()
+        private val danmakuTextColorFilter = TextColorFilter()
 
         private val _danmakuState =
             MutableStateFlow(
@@ -110,6 +111,10 @@ class DanmakuViewModel
                     speedFactor = Prefs.defaultDanmakuSpeedFactor,
                     maskEnabled = Prefs.defaultDanmakuMask,
                     enabledTypes = Prefs.defaultDanmakuTypes.map { it.toDanmakuEntity() },
+                    blockColorfulEnabled = Prefs.defaultDanmakuBlockColorfulEnabled,
+                    blockRepeatEnabled = Prefs.defaultDanmakuBlockRepeatEnabled,
+                    blockByUserFilterEnabled = Prefs.defaultDanmakuBlockByUserFilterEnabled,
+                    aiCloudLevel = Prefs.defaultDanmakuAiCloudLevel,
                 ),
             )
         val danmakuState = _danmakuState.asStateFlow()
@@ -162,6 +167,31 @@ class DanmakuViewModel
         private var segmentWatchJob: Job? = null
         private var retainedSegments = 1..2
 
+        /**
+         * 分段过滤/合并使用的调度器。
+         *
+         * 默认 [Dispatchers.Default]（单段可达数千条 × N 条规则，属 CPU 密集操作，
+         * 放主线程会掉帧）；单元测试替换为测试调度器以配合 `advanceUntilIdle`。
+         */
+        internal var filterDispatcher: CoroutineDispatcher = Dispatchers.Default
+
+        init {
+            // 账号规则由应用级仓库统一缓存/预热：这里只镜像菜单展示条数，
+            // 并在规则晚于分段就绪时重载当前分段，保证已渲染弹幕也按新规则过滤
+            viewModelScope.launch {
+                danmakuFilterRepository.ruleCount.collect { count ->
+                    _danmakuState.update { it.copy(userFilterRuleCount = count) }
+                }
+            }
+            viewModelScope.launch {
+                danmakuFilterRepository.version.drop(1).collect {
+                    if (_danmakuState.value.blockByUserFilterEnabled && danmakuFilterRepository.hasRules) {
+                        reloadCurrentSegments()
+                    }
+                }
+            }
+        }
+
         /** 初始化弹幕播放器。 */
         fun init() {
             if (danmakuPlayer != null) return
@@ -190,6 +220,11 @@ class DanmakuViewModel
             loadingSegments.clear()
         }
 
+        override fun onCleared() {
+            release()
+            super.onCleared()
+        }
+
         /**
          * 切换视频时清空弹幕数据。
          *
@@ -205,6 +240,8 @@ class DanmakuViewModel
             segmentWatchJob?.cancel()
             segmentWatchJob = null
             loadGeneration++
+            currentAid = 0L
+            currentCid = 0L
             loadedSegments.clear()
             loadingSegments.clear()
             danmakuClosed = false
@@ -273,6 +310,7 @@ class DanmakuViewModel
                         "Danmaku meta: segmentSizeMs=$segmentSizeMs, segTotal=$segmentTotal, count=${meta.count}"
                     }
 
+                    danmakuFilterRepository.prefetch()
                     startSegmentWatcher()
                     // 触发初始段加载：watcher 订阅 StateFlow 时会立即收到当前值
                 }
@@ -437,6 +475,21 @@ class DanmakuViewModel
             return true
         }
 
+        /** 加载期过滤开关变化后重载当前段：已加载分段不会随开关变化。 */
+        private fun reloadCurrentSegments() {
+            val player = danmakuPlayer ?: return
+            if (loadedSegments.isEmpty() && loadingSegments.isEmpty()) return
+            val targetSeg = segmentIndexOf(currentTimeFlow.value)
+            viewModelScope.launch {
+                loadGeneration++
+                player.clearData()
+                loadedSegments.clear()
+                loadingSegments.clear()
+                logger.info { "Reload current segments: targetSeg=$targetSeg" }
+                ensureSegments(targetSeg)
+            }
+        }
+
         /**
          * 拉取单个分段并追加到弹幕引擎，带超时与重试。
          *
@@ -460,7 +513,12 @@ class DanmakuViewModel
                                     preferApiType = if (Prefs.apiType == DataApiType.App) ApiType.App else ApiType.Web,
                                 )
                             }
-                        val items = withContext(conversionDispatcher) { dataList.map { it.toDanmakuItemData() } }
+                        val mergeEnabled = _danmakuState.value.blockRepeatEnabled
+                        val (items, keptCount) =
+                            withContext(filterDispatcher) {
+                                val filteredList = dataList.filterForDisplay()
+                                filteredList.toDanmakuItems(mergeEnabled) to filteredList.size
+                            }
                         if (generation != loadGeneration ||
                             cid != currentCid ||
                             segmentIndex !in retainedSegments
@@ -471,7 +529,7 @@ class DanmakuViewModel
                         danmakuPlayer?.updateData(items)
                         loadedSegments.add(segmentIndex)
                         logger.info {
-                            "Load danmaku segment $segmentIndex success, size=${items.size}"
+                            "Load danmaku segment $segmentIndex: raw=${dataList.size}, kept=$keptCount"
                         }
                         return
                     } catch (e: TimeoutCancellationException) {
@@ -501,12 +559,11 @@ class DanmakuViewModel
             }
         }
 
-        /** 将接口层弹幕数据转换为 akdanmaku 渲染数据。 */
-        private fun DanmakuData.toDanmakuItemData(): DanmakuItemData =
+        private fun DanmakuData.toDanmakuItemData(content: String = text): DanmakuItemData =
             DanmakuItemData(
                 danmakuId = dmid,
                 position = (time * 1000).toLong(),
-                content = text,
+                content = content,
                 mode =
                     when (type) {
                         4 -> DanmakuItemData.DANMAKU_MODE_CENTER_BOTTOM
@@ -514,18 +571,77 @@ class DanmakuViewModel
                         else -> DanmakuItemData.DANMAKU_MODE_ROLLING
                     },
                 textSize = size,
-                textColor = Color(color).toArgb(),
+                textColor = color,
             )
 
         /**
-         * 加载弹幕防遮挡蒙版。
+         * 将过滤后的分段数据转换为渲染数据。
          *
-         * @param aid 视频 AV 号
-         * @param cid 视频 CID
+         * [mergeEnabled] 开启时，把同一文本在 [MERGE_WINDOW_SECONDS] 窗口内的多条弹幕
+         * 合并为一条「文本 ×N」，其余同组条目直接丢弃；关闭时原样保留每一条。
          */
+        internal fun List<DanmakuData>.toDanmakuItems(mergeEnabled: Boolean): List<DanmakuItemData> {
+            if (!mergeEnabled) return map { it.toDanmakuItemData() }
+            if (isEmpty()) return emptyList()
+
+            val result = ArrayList<DanmakuItemData>(size)
+            for (group in groupBy { it.text }.values) {
+                if (group.size == 1) {
+                    result += group[0].toDanmakuItemData()
+                    continue
+                }
+                val sorted = group.sortedBy { it.time }
+                var i = 0
+                while (i < sorted.size) {
+                    val baseTime = sorted[i].time
+                    var j = i
+                    while (j < sorted.size && sorted[j].time - baseTime <= MERGE_WINDOW_SECONDS) j++
+                    val windowSize = j - i
+                    result +=
+                        if (windowSize == 1) {
+                            sorted[i].toDanmakuItemData()
+                        } else {
+                            sorted[i].toDanmakuItemData(content = "${sorted[i].text} ×$windowSize")
+                        }
+                    i = j
+                }
+            }
+            return result
+        }
+
+        /** 按当前设置过滤分段数据（进引擎前的加载级过滤）。 */
+        private fun List<DanmakuData>.filterForDisplay(): List<DanmakuData> {
+            val state = _danmakuState.value
+            val kept = ArrayList<DanmakuData>(size)
+            for (item in this) {
+                // 高级(7)/代码(8)/BAS(9) 弹幕引擎无渲染器，落到滚动等于把原始 JSON/JS/BAS 当文本滚屏，直接丢弃
+                if (item.type in SPECIAL_DANMAKU_MODES) continue
+                if (danmakuFilterRepository.shouldDrop(midHash = item.midHash, content = item.text)) continue
+                if (state.aiCloudLevel > 0 && item.shouldDropByAi(state.aiCloudLevel)) continue
+                kept += item
+            }
+            return kept
+        }
+
+        /**
+         * [aiLevel] 直接作为丢弃阈值（评分低于该值即过滤）。
+         *
+         * Web `seg.so` 实测不下发 ai_flag（[DanmakuData.aiFlagScore] 恒为 0），
+         * 实际依据是 weight（[DanmakuData.level] 实测 1-11）；两者非 0 时取绝对值较大者。
+         */
+        internal fun DanmakuData.shouldDropByAi(aiLevel: Int): Boolean {
+            val score =
+                sequenceOf(level, aiFlagScore)
+                    .filter { it != 0 }
+                    .maxOfOrNull { abs(it) }
+                    ?: return false
+            return score < aiLevel
+        }
+
+        /** 加载当前视频的蒙版；关闭防遮挡或页面隐藏时不发请求。 */
         fun loadDanmakuMask(
-            aid: Long,
-            cid: Long,
+            aid: Long = currentAid,
+            cid: Long = currentCid,
         ) {
             val target = aid to cid
             if (maskTarget != target) {
@@ -625,56 +741,116 @@ class DanmakuViewModel
         }
 
         /**
-         * 更新弹幕配置。
+         * 应用弹幕设置动作。
          *
-         * 同时更新内存状态、akdanmaku 配置和 Prefs 持久化。
+         * 状态映射由 [applyTo] 负责，副作用按动作类型分发：
+         * - 引擎级过滤（类型/彩色/合并重复）：只更新对应 filter，不重下分段
+         * - 加载级过滤（账号规则/AI 等级）：重载当前分段，才能作用到已加载弹幕
+         * - 显示参数与蒙版：更新引擎配置或按需加载资源
          */
         fun updateDanmakuState(action: DanmakuSettingAction) {
             val old = _danmakuState.value
-            val new =
-                when (action) {
-                    is DanmakuSettingAction.SetScale -> old.copy(scale = action.scale)
-                    is DanmakuSettingAction.SetOpacity -> old.copy(opacity = action.opacity)
-                    is DanmakuSettingAction.SetArea -> old.copy(area = action.area)
-                    is DanmakuSettingAction.SetSpeedFactor -> old.copy(speedFactor = action.factor)
-                    is DanmakuSettingAction.SetMaskEnabled -> old.copy(maskEnabled = action.enabled)
-                    is DanmakuSettingAction.SetEnabledTypes -> old.copy(enabledTypes = action.types)
-                }
-            if (old == new) return
+            val new = action.applyTo(old)
+            if (new == old) return
 
             _danmakuState.update { new }
 
-            if (new.enabledTypes != old.enabledTypes) {
-                updateDanmakuConfigTypeFilter(new.enabledTypes)
-                Prefs.defaultDanmakuTypes = new.enabledTypes.map { it.toDataDanmakuType() }
-            }
-            if (new.scale != old.scale) {
-                updateDanmakuScale(new.scale)
-                Prefs.defaultDanmakuScale = new.scale
-            }
-            if (new.speedFactor != old.speedFactor) {
-                danmakuPlayer?.setDanmakuRollingSpeed(new.speedFactor)
-                Prefs.defaultDanmakuSpeedFactor = new.speedFactor
-            }
-            if (new.area != old.area) {
-                updateDanmakuArea(new.area)
-                Prefs.defaultDanmakuArea = new.area
-            }
-            if (new.opacity != old.opacity) {
-                Prefs.defaultDanmakuOpacity = new.opacity
-            }
-            if (new.maskEnabled != old.maskEnabled) {
-                Prefs.defaultDanmakuMask = new.maskEnabled
+            when (action) {
+                is DanmakuSettingAction.SetEnabledTypes -> {
+                    updateDanmakuConfigTypeFilter(new.enabledTypes)
+                    applyDataFilters(new)
+                    Prefs.defaultDanmakuTypes = new.enabledTypes.map { it.toDataDanmakuType() }
+                    logger.info { "Danmaku enabled types updated: ${new.enabledTypes}" }
+                }
+
+                is DanmakuSettingAction.SetBlockColorfulEnabled -> {
+                    updateDanmakuConfigColorFilter(new.blockColorfulEnabled)
+                    applyDataFilters(new)
+                    Prefs.defaultDanmakuBlockColorfulEnabled = new.blockColorfulEnabled
+                    logger.info { "Danmaku blockColorfulEnabled updated: ${new.blockColorfulEnabled}" }
+                }
+
+                is DanmakuSettingAction.SetBlockRepeatEnabled -> {
+                    Prefs.defaultDanmakuBlockRepeatEnabled = new.blockRepeatEnabled
+                    reloadCurrentSegments()
+                    logger.info { "Danmaku blockRepeatEnabled updated: ${new.blockRepeatEnabled}" }
+                }
+
+                is DanmakuSettingAction.SetBlockByUserFilterEnabled -> {
+                    Prefs.defaultDanmakuBlockByUserFilterEnabled = new.blockByUserFilterEnabled
+                    reloadCurrentSegments()
+                }
+
+                is DanmakuSettingAction.SetAiCloudLevel -> {
+                    Prefs.defaultDanmakuAiCloudLevel = new.aiCloudLevel
+                    reloadCurrentSegments()
+                }
+
+                is DanmakuSettingAction.SetScale -> {
+                    updateDanmakuScale(new.scale)
+                    Prefs.defaultDanmakuScale = new.scale
+                }
+
+                is DanmakuSettingAction.SetSpeedFactor -> {
+                    danmakuPlayer?.setDanmakuRollingSpeed(new.speedFactor)
+                    Prefs.defaultDanmakuSpeedFactor = new.speedFactor
+                }
+
+                is DanmakuSettingAction.SetArea -> {
+                    updateDanmakuArea(new.area)
+                    Prefs.defaultDanmakuArea = new.area
+                }
+
+                is DanmakuSettingAction.SetOpacity -> Prefs.defaultDanmakuOpacity = new.opacity
+
+                is DanmakuSettingAction.SetMaskEnabled -> {
+                    Prefs.defaultDanmakuMask = new.maskEnabled
+                    // 蒙版只在开启时请求：关闭期间不下载，打开后若当前视频尚未加载则补加载
+                    if (new.maskEnabled && _danmakuMask.value == null && currentCid > 0L) {
+                        loadDanmakuMask()
+                    }
+                }
             }
             if (new.enabledTypes != old.enabledTypes || new.maskEnabled != old.maskEnabled) applyRenderingState()
         }
 
-        private fun initDanmakuConfig() {
-            val types = Prefs.defaultDanmakuTypes.map { it.toDanmakuEntity() }
-            val area = Prefs.defaultDanmakuArea
-            val scale = Prefs.defaultDanmakuScale
-            val factor = Prefs.defaultDanmakuSpeedFactor
+        /** 将设置动作映射为新的弹幕状态（纯函数，无副作用）。 */
+        private fun DanmakuSettingAction.applyTo(state: DanmakuState): DanmakuState =
+            when (this) {
+                is DanmakuSettingAction.SetScale -> state.copy(scale = scale)
+                is DanmakuSettingAction.SetOpacity -> state.copy(opacity = opacity)
+                is DanmakuSettingAction.SetArea -> state.copy(area = area)
+                is DanmakuSettingAction.SetSpeedFactor -> state.copy(speedFactor = factor)
+                is DanmakuSettingAction.SetMaskEnabled -> state.copy(maskEnabled = enabled)
+                is DanmakuSettingAction.SetEnabledTypes -> state.copy(enabledTypes = types)
+                is DanmakuSettingAction.SetBlockColorfulEnabled -> state.copy(blockColorfulEnabled = enabled)
+                is DanmakuSettingAction.SetBlockRepeatEnabled -> state.copy(blockRepeatEnabled = enabled)
+                is DanmakuSettingAction.SetBlockByUserFilterEnabled -> state.copy(blockByUserFilterEnabled = enabled)
+                is DanmakuSettingAction.SetAiCloudLevel -> state.copy(aiCloudLevel = level)
+            }
 
+        /** 初始化构建引擎配置：只在 [init] 时调用一次。 */
+        private fun initDanmakuConfig() {
+            val state = _danmakuState.value
+            updateDanmakuConfigTypeFilter(state.enabledTypes)
+            updateDanmakuConfigColorFilter(state.blockColorfulEnabled)
+            danmakuConfig =
+                danmakuConfig.copy(
+                    density = 120,
+                    textSizeScale = state.scale,
+                    screenPart = state.area,
+                    rollingSpeedFactor = state.speedFactor,
+                )
+            applyDataFilters(state)
+            logger.info {
+                "Danmaku filter chain initialized: types=${state.enabledTypes}, " +
+                    "colorful=${state.blockColorfulEnabled}, repeat=${state.blockRepeatEnabled}, " +
+                    "aiCloudLevel=${state.aiCloudLevel}"
+            }
+        }
+
+        /** 只重建类型过滤器；启用类型变化时调用。 */
+        private fun updateDanmakuConfigTypeFilter(types: List<DanmakuEntityDanmakuType>) {
             danmakuTypeFilter.clear()
             if (!types.contains(DanmakuEntityDanmakuType.All)) {
                 val allTypes = DanmakuEntityDanmakuType.entries.toMutableList()
@@ -690,35 +866,30 @@ class DanmakuViewModel
                         }
                     }.forEach { danmakuTypeFilter.addFilterItem(it) }
             }
-
-            danmakuConfig =
-                danmakuConfig.copy(
-                    density = 120,
-                    textSizeScale = scale,
-                    screenPart = area,
-                    dataFilter = listOf(danmakuTypeFilter),
-                    rollingSpeedFactor = factor,
-                )
-            danmakuConfig.updateFilter()
-            danmakuPlayer?.updateConfig(danmakuConfig)
         }
 
-        private fun updateDanmakuConfigTypeFilter(enabledTypes: List<DanmakuEntityDanmakuType>) {
-            danmakuTypeFilter.clear()
-            if (!enabledTypes.contains(DanmakuEntityDanmakuType.All)) {
-                val allTypes = DanmakuEntityDanmakuType.entries.toMutableList()
-                allTypes.remove(DanmakuEntityDanmakuType.All)
-                allTypes.removeAll(enabledTypes)
-                allTypes
-                    .mapNotNull {
-                        when (it) {
-                            DanmakuEntityDanmakuType.Rolling -> DanmakuItemData.DANMAKU_MODE_ROLLING
-                            DanmakuEntityDanmakuType.Top -> DanmakuItemData.DANMAKU_MODE_CENTER_TOP
-                            DanmakuEntityDanmakuType.Bottom -> DanmakuItemData.DANMAKU_MODE_CENTER_BOTTOM
-                            else -> null
-                        }
-                    }.forEach { danmakuTypeFilter.addFilterItem(it) }
+        /** 只更新彩色弹幕过滤器；开关变化时调用。 */
+        private fun updateDanmakuConfigColorFilter(enabled: Boolean) {
+            danmakuTextColorFilter.filterColor.clear()
+            if (enabled) {
+                danmakuTextColorFilter.filterColor.add(0xFFFFFF)
             }
+        }
+
+        /**
+         * 把当前已注册的 filter 应用为 [DanmakuConfig.dataFilter] 并通知引擎重新过滤。
+         *
+         * 只重组列表、不重算各 filter 内容；初始化与运行时切换共用，避免出现「rebuild」歧义。
+         */
+        private fun applyDataFilters(state: DanmakuState) {
+            danmakuConfig =
+                danmakuConfig.copy(
+                    dataFilter =
+                        buildList {
+                            add(danmakuTypeFilter)
+                            if (state.blockColorfulEnabled) add(danmakuTextColorFilter)
+                        },
+                )
             danmakuConfig.updateFilter()
             danmakuPlayer?.updateConfig(danmakuConfig)
         }
@@ -767,5 +938,16 @@ class DanmakuViewModel
 
             /** 重试退避基数（毫秒），按指数递增：1s、2s。 */
             private const val RETRY_BACKOFF_BASE_MS = 1_000L
+
+            /**
+             * 高级(7)/代码(8)/BAS(9) 弹幕，引擎无对应渲染器。
+             *
+             * 不做成用户开关：这些弹幕一旦按滚动文本渲染就是原始 JSON/JS/BAS 源码，
+             * 没有「保留」的合理场景，直接丢弃。
+             */
+            private val SPECIAL_DANMAKU_MODES = setOf(7, 8, 9)
+
+            /** 重复弹幕合并的时间窗（秒），窗口内相同文本的弹幕合并为一条。 */
+            private const val MERGE_WINDOW_SECONDS = 5f
         }
     }

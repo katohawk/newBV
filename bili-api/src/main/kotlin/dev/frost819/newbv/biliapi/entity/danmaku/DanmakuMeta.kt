@@ -5,8 +5,11 @@ import bilibili.community.service.dm.v1.DmWebViewReply
 /**
  * 弹幕元数据（来自 dm/view 接口）。
  *
- * 用于弹幕分段加载：分段大小以服务端返回的 [segmentSizeMs] 为准（通常 6 分钟），
+ * 仅用于弹幕分段加载：分段大小以服务端返回的 [segmentSizeMs] 为准（通常 6 分钟），
  * 不在客户端硬编码；[segTotal] 用于越界保护。
+ *
+ * 不携带账号的弹幕屏蔽配置：账号相关能力仅由 [/x/dm/filter/user] 提供（见
+ * `DanmakuFilterRepository`），显示相关开关全部以本地设置为准。
  *
  * @property segmentSizeMs 每段时长（毫秒）
  * @property segTotal 分段总数；0 表示未知（不做越界限制）
@@ -37,7 +40,7 @@ data class DanmakuMeta(
  * 对应端点：GET /x/v2/dm/web/view（见 docs/bilibili-API-collect-master/docs/danmaku/danmaku_proto.md）
  *
  * @receiver dm/view 的 protobuf 响应
- * @return 提取分段配置后的元数据；`dmSge` 缺失时 [DanmakuMeta.segmentSizeMs] 为 0，由调用方兜底
+ * @return 分段配置元数据；`dmSge` 缺失时 [DanmakuMeta.segmentSizeMs] 为 0，由调用方兜底
  */
 fun DmWebViewReply.toDanmakuMeta(): DanmakuMeta =
     DanmakuMeta(

@@ -51,7 +51,6 @@ internal object PrefKeys {
 
     // ===== 播放器 - 音频 =====
     val defaultAudio = intPreferencesKey("da")
-    val enableFfmpegAudioRenderer = booleanPreferencesKey("enable_ffmpeg_audio_renderer")
 
     // ===== 播放器 - 弹幕 =====
     val defaultDanmakuTypes = stringPreferencesKey("ddts")
@@ -60,6 +59,10 @@ internal object PrefKeys {
     val defaultDanmakuSpeedFactor = floatPreferencesKey("ddsf")
     val defaultDanmakuArea = floatPreferencesKey("dda")
     val defaultDanmakuMask = booleanPreferencesKey("prefer_enable_webmark")
+    val defaultDanmakuBlockColorfulEnabled = booleanPreferencesKey("dbc")
+    val defaultDanmakuBlockRepeatEnabled = booleanPreferencesKey("dbr")
+    val defaultDanmakuBlockByUserFilterEnabled = booleanPreferencesKey("dbu")
+    val defaultDanmakuAiCloudLevel = intPreferencesKey("dai")
 
     // ===== 播放器 - 字幕 =====
     val defaultSubtitleFontSize = intPreferencesKey("dsfs")

@@ -9,6 +9,7 @@ import coil3.disk.DiskCache
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.crossfade
 import dagger.hilt.android.HiltAndroidApp
+import dev.frost819.newbv.app.data.danmaku.DanmakuFilterRepository
 import dev.frost819.newbv.app.network.HttpServer
 import dev.frost819.newbv.app.util.CacheManager
 import dev.frost819.newbv.biliapi.http.BiliHttpApi
@@ -59,6 +60,9 @@ class BVApplication : Application() {
     @Inject
     lateinit var channelRepository: ChannelRepository
 
+    @Inject
+    lateinit var danmakuFilterRepository: DanmakuFilterRepository
+
     /**
      * 播放器与 CDN 测速共用的 OkHttpClient。
      *
@@ -94,6 +98,10 @@ class BVApplication : Application() {
             mid = mid,
             accessToken = accessToken,
         )
+
+        // 账号云端弹幕屏蔽规则：启动时后台预热，播放器/直播只读缓存（登录态由仓库自行判断）
+        danmakuFilterRepository.prefetch()
+
         if (accessToken.isNotBlank() && Prefs.buvid.isNotBlank()) {
             CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
                 channelRepository.initDefaultChannel(accessToken, Prefs.buvid)
@@ -118,8 +126,7 @@ class BVApplication : Application() {
         @Suppress("UNUSED_EXPRESSION")
         crashHandler
 
-        // 根据用户设置启用崩溃上传，并尝试上传上次崩溃未发送的日志
-        crashUploader.enabled = Prefs.crashReportEnabled
+        // 已启用上传时，尝试上传上次崩溃未发送的日志；开关状态由 CrashUploader 实时读取
         if (crashUploader.canUpload()) {
             CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
                 crashUploader.uploadPendingCrashLogs()

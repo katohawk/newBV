@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Wifi
@@ -36,7 +37,9 @@ import dev.frost819.newbv.app.ui.component.player.menu.component.PlayerTwoLevelM
 import dev.frost819.newbv.app.viewmodel.player.LocalMenuFocusStateData
 import dev.frost819.newbv.app.viewmodel.player.MenuFocusState
 import dev.frost819.newbv.app.viewmodel.player.MenuFocusStateData
+import dev.frost819.newbv.app.viewmodel.player.VideoPlayerDanmakuFilterMenuItem
 import dev.frost819.newbv.biliapi.repositories.LivePlayLine
+import dev.frost819.newbv.biliapi.repositories.LiveQuality
 import dev.frost819.newbv.danmaku.config.DanmakuState
 import dev.frost819.newbv.data.datastore.DanmakuType
 
@@ -47,22 +50,23 @@ enum class LivePlayerMenuNavItem(
     val displayName: String,
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
 ) {
-    Picture("画质", Icons.Outlined.Image),
-    Line("线路", Icons.Outlined.Wifi),
-    Danmaku("弹幕", Icons.Outlined.ClearAll),
+    Picture("画质设置", Icons.Outlined.Image),
+    Line("线路选择", Icons.Outlined.Wifi),
+    Danmaku("弹幕设置", Icons.Outlined.ClearAll),
+    DanmakuFilter("弹幕屏蔽", Icons.Outlined.Block),
 }
 
 /**
  * 直播播放器设置菜单控制器。
  *
- * 从右侧滑入的半透明面板，包含 3 个 Tab（画质/线路/弹幕）。
+ * 从右侧滑入的半透明面板，包含 4 个 Tab（画质设置/线路选择/弹幕设置/弹幕屏蔽）。
  * 三态焦点模型与视频播放器一致：MenuNav ↔ Menu ↔ Items。
  * 画质、线路 Tab 简化为二级：MenuNav ↔ Items（跳过 Menu 层级）。
  *
  * @param show 是否显示
- * @param availableQualities 可用画质列表（qn, desc）
- * @param currentQuality 当前画质 qn
- * @param onQualityChange 画质变化回调
+ * @param availableQualities 可用画质列表（HDR 档经本机解码能力过滤）
+ * @param currentQuality 当前画质档位标识（[LiveQuality.key]）
+ * @param onQualityChange 画质变化回调（回传 [LiveQuality.key]）
  * @param availableLines 可用线路列表
  * @param currentLine 当前线路序号（从 1 开始）
  * @param onLineChange 线路变化回调
@@ -74,7 +78,7 @@ enum class LivePlayerMenuNavItem(
 fun LiveMenuController(
     modifier: Modifier = Modifier,
     show: Boolean,
-    availableQualities: List<Pair<Int, String>>,
+    availableQualities: List<LiveQuality>,
     currentQuality: Int,
     onQualityChange: (Int) -> Unit,
     availableLines: List<LivePlayLine>,
@@ -120,7 +124,7 @@ fun LiveMenuController(
 @Composable
 @Suppress("LongParameterList")
 private fun LiveMenuControllerContent(
-    availableQualities: List<Pair<Int, String>>,
+    availableQualities: List<LiveQuality>,
     currentQuality: Int,
     onQualityChange: (Int) -> Unit,
     availableLines: List<LivePlayLine>,
@@ -171,7 +175,9 @@ private fun LiveMenuControllerContent(
                             }
                             if (it.key == Key.DirectionLeft) {
                                 focusState =
-                                    if (selectedNavItem == LivePlayerMenuNavItem.Danmaku) {
+                                    if (selectedNavItem == LivePlayerMenuNavItem.Danmaku ||
+                                        selectedNavItem == LivePlayerMenuNavItem.DanmakuFilter
+                                    ) {
                                         MenuFocusState.Menu
                                     } else {
                                         MenuFocusState.Items
@@ -199,7 +205,7 @@ private fun LiveMenuControllerContent(
 @Suppress("LongParameterList")
 private fun LiveMenuList(
     selectedNavMenu: LivePlayerMenuNavItem,
-    availableQualities: List<Pair<Int, String>>,
+    availableQualities: List<LiveQuality>,
     currentQuality: Int,
     onQualityChange: (Int) -> Unit,
     availableLines: List<LivePlayLine>,
@@ -215,9 +221,9 @@ private fun LiveMenuList(
             LivePlayerMenuNavItem.Picture ->
                 PlayerTwoLevelMenu(
                     items = availableQualities,
-                    selected = availableQualities.firstOrNull { it.first == currentQuality },
-                    itemLabel = { it.second },
-                    onItemSelected = { onQualityChange(it.first) },
+                    selected = availableQualities.firstOrNull { it.key == currentQuality },
+                    itemLabel = { it.displayDesc },
+                    onItemSelected = { onQualityChange(it.key) },
                     navFocusRequester = navFocusRequester,
                     onFocusStateChange = onFocusStateChange,
                 )
@@ -260,6 +266,33 @@ private fun LiveMenuList(
                     onDanmakuMaskChange = { onDanmakuSettingChange(DanmakuSettingAction.SetMaskEnabled(it)) },
                 )
             }
+
+            LivePlayerMenuNavItem.DanmakuFilter ->
+                DanmakuFilterMenuList(
+                    visibleItems =
+                        listOf(
+                            VideoPlayerDanmakuFilterMenuItem.BlockColorful,
+                            VideoPlayerDanmakuFilterMenuItem.BlockByUserFilter,
+                        ),
+                    currentBlockColorfulEnabled = danmakuState.blockColorfulEnabled,
+                    currentBlockRepeatEnabled = danmakuState.blockRepeatEnabled,
+                    currentBlockByUserFilterEnabled = danmakuState.blockByUserFilterEnabled,
+                    currentAiCloudLevel = danmakuState.aiCloudLevel,
+                    userFilterRuleCount = danmakuState.userFilterRuleCount,
+                    onDanmakuBlockColorfulEnabledChange = {
+                        onDanmakuSettingChange(DanmakuSettingAction.SetBlockColorfulEnabled(it))
+                    },
+                    onDanmakuBlockRepeatEnabledChange = {
+                        onDanmakuSettingChange(DanmakuSettingAction.SetBlockRepeatEnabled(it))
+                    },
+                    onDanmakuBlockByUserFilterEnabledChange = {
+                        onDanmakuSettingChange(DanmakuSettingAction.SetBlockByUserFilterEnabled(it))
+                    },
+                    onDanmakuAiCloudLevelChange = {
+                        onDanmakuSettingChange(DanmakuSettingAction.SetAiCloudLevel(it))
+                    },
+                    onFocusStateChange = onFocusStateChange,
+                )
         }
     }
 }

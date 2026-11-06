@@ -30,6 +30,8 @@ import androidx.media3.exoplayer.upstream.ParsingLoadable
 import dev.frost819.newbv.player.AbstractVideoPlayer
 import dev.frost819.newbv.player.VideoPlayerOptions
 import dev.frost819.newbv.player.formatMinSec
+import dev.frost819.newbv.player.isAudioRenderError
+import dev.frost819.newbv.player.isVideoDecodeError
 import okhttp3.OkHttpClient
 import java.io.ByteArrayInputStream
 import java.io.InputStream
@@ -124,7 +126,8 @@ class ExoMediaPlayer(
                 // 对照弹幕卡顿：使用升级前的固定调度节奏，隔离新版默认动态调度的影响。
                 .experimentalSetDynamicSchedulingEnabled(false)
                 .setRenderersFactory(renderersFactory)
-                .setLoadControl(createPlaybackLoadControl())
+                // 限制缓冲时长与字节数：默认 50 秒窗在 4K 高码率流上会占满低内存电视的堆
+                .setLoadControl(PlayerLoadControl.create())
                 .setSeekForwardIncrementMs(1000 * 10)
                 .setSeekBackIncrementMs(1000 * 5)
                 .build()
@@ -323,13 +326,12 @@ class ExoMediaPlayer(
             tryRecoverBehindLiveWindow(error)
             return
         }
-        // 解码器无法处理当前格式：上报专用信号，交由上层尝试回退编码/画质
         val rendererType = MimeTypes.getTrackType((error as? ExoPlaybackException)?.rendererFormat?.sampleMimeType)
-        if (isVideoDecodeError(error.errorCode, rendererType)) {
-            mPlayerEventListener?.onVideoDecodeUnsupported(error)
-            return
+        when {
+            error.isAudioRenderError() -> mPlayerEventListener?.onAudioDecodeUnsupported()
+            isVideoDecodeError(error.errorCode, rendererType) -> mPlayerEventListener?.onVideoDecodeUnsupported(error)
+            else -> mPlayerEventListener?.onError(error)
         }
-        mPlayerEventListener?.onError(error)
     }
 
     /**

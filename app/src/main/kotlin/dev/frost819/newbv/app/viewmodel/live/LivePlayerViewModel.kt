@@ -9,21 +9,31 @@ import androidx.lifecycle.viewModelScope
 import com.kuaishou.akdanmaku.data.DanmakuItemData
 import com.kuaishou.akdanmaku.ui.DanmakuPlayer
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.frost819.newbv.app.data.danmaku.DanmakuFilterRepository
 import dev.frost819.newbv.app.ui.component.livecard.formatOnlineCount
+import dev.frost819.newbv.app.ui.state.live.LivePlayerState
+import dev.frost819.newbv.app.ui.state.live.LivePlayerUiState
+import dev.frost819.newbv.app.util.VideoCapabilityProvider
+import dev.frost819.newbv.app.util.VideoDecodeProfile
+import dev.frost819.newbv.app.util.toPlaybackLoadErrorMessage
 import dev.frost819.newbv.biliapi.http.entity.live.DanmakuEvent
 import dev.frost819.newbv.biliapi.http.entity.live.LiveEvent
 import dev.frost819.newbv.biliapi.http.entity.live.OnlineRankCountEvent
+import dev.frost819.newbv.biliapi.http.entity.live.RoomInfoData
 import dev.frost819.newbv.biliapi.repositories.LivePlayInfo
 import dev.frost819.newbv.biliapi.repositories.LivePlayLine
+import dev.frost819.newbv.biliapi.repositories.LiveQuality
 import dev.frost819.newbv.biliapi.repositories.LiveRepository
 import dev.frost819.newbv.biliapi.websocket.LiveDataWebSocket
 import dev.frost819.newbv.core.log.Loggers
 import dev.frost819.newbv.data.datastore.Prefs
+import dev.frost819.newbv.data.datastore.VideoCodec
 import dev.frost819.newbv.player.AbstractVideoPlayer
 import dev.frost819.newbv.player.VideoPlayerListener
 import dev.frost819.newbv.player.VideoPlayerOptions
 import dev.frost819.newbv.player.impl.exo.ExoMediaPlayer
 import dev.frost819.newbv.player.impl.exo.ExoPlayerFactory
+import dev.frost819.newbv.player.toPlaybackErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,39 +46,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-
-/**
- * 直播播放器状态。
- */
-enum class LivePlayerState {
-    Idle,
-    Loading,
-    Playing,
-    Paused,
-    Buffering,
-    Error,
-    Ended,
-}
-
-/**
- * 直播播放器 UI 状态。
- */
-data class LivePlayerUiState(
-    val title: String = "",
-    val cover: String = "",
-    val roomId: Long = 0,
-    val realRoomId: Int = 0,
-    val liveStatus: Int = 0,
-    val areaName: String = "",
-    val onlineCount: String = "0",
-    val playerState: LivePlayerState = LivePlayerState.Idle,
-    val isBuffering: Boolean = false,
-    val errorMessage: String? = null,
-    val availableQualities: List<Pair<Int, String>> = emptyList(),
-    val currentQuality: Int = 0,
-    val availableLines: List<LivePlayLine> = emptyList(),
-    val currentLine: Int = 0,
-)
 
 /**
  * 直播播放器 ViewModel。
@@ -84,6 +61,8 @@ class LivePlayerViewModel
     constructor(
         private val liveRepository: LiveRepository,
         private val exoPlayerFactory: ExoPlayerFactory,
+        private val videoCapabilityProvider: VideoCapabilityProvider,
+        private val danmakuFilterRepository: DanmakuFilterRepository,
     ) : ViewModel() {
         private val logger = Loggers.get("LivePlayerViewModel")
 
@@ -105,6 +84,54 @@ class LivePlayerViewModel
         /** 调试信息，仅在 [Prefs.showPlayerDebugInfo] 开启时更新。 */
         val debugInfo: StateFlow<String> = _debugInfo.asStateFlow()
 
+        /** 提成字段便于单测直接驱动回调；错误态统一由 [failPlayback] 写入。 */
+        private val videoPlayerListener =
+            object : VideoPlayerListener {
+                override fun onError(error: Exception) {
+                    logger.error(error) { "Live player error" }
+                    failPlayback(error.toPlaybackErrorMessage())
+                }
+
+                override fun onVideoDecodeUnsupported(error: Exception) {
+                    logger.error { "Live video decode unsupported: quality=${_uiState.value.currentQuality}" }
+                    // 直播是单条流，无法换编码；提示用户切画质或线路自救
+                    failPlayback("解码失败，请尝试切换画质或线路")
+                }
+
+                override fun onAudioDecodeUnsupported() {
+                    logger.error { "Live audio decode unsupported: quality=${_uiState.value.currentQuality}" }
+                    failPlayback("音频解码失败，请尝试切换线路")
+                }
+
+                override fun onReady() {
+                    _uiState.update {
+                        it.copy(playerState = LivePlayerState.Playing, isBuffering = false)
+                    }
+                }
+
+                override fun onPlay() {
+                    _uiState.update { it.copy(playerState = LivePlayerState.Playing) }
+                }
+
+                override fun onPause() {
+                    // 出错后 ExoPlayer 会紧跟着回调 isPlaying=false，不能把错误态覆盖成暂停态
+                    if (_uiState.value.playerState is LivePlayerState.Error) return
+                    _uiState.update { it.copy(playerState = LivePlayerState.Paused) }
+                }
+
+                override fun onBuffering() {
+                    _uiState.update { it.copy(isBuffering = true) }
+                }
+
+                override fun onEnd() {
+                    _uiState.update { it.copy(playerState = LivePlayerState.Ended) }
+                }
+
+                override fun onSeekBack(seekBackIncrementMs: Long) {}
+
+                override fun onSeekForward(seekForwardIncrementMs: Long) {}
+            }
+
         /**
          * 初始化直播间信息。
          */
@@ -118,7 +145,6 @@ class LivePlayerViewModel
                     roomId = roomId,
                     title = title,
                     cover = cover,
-                    playerState = LivePlayerState.Loading,
                 )
             }
         }
@@ -136,47 +162,8 @@ class LivePlayerViewModel
                     referer = "https://live.bilibili.com",
                 )
             videoPlayer = exoPlayerFactory.create(context, options)
-            videoPlayer?.setPlayerEventListener(
-                object : VideoPlayerListener {
-                    override fun onError(error: Exception) {
-                        logger.error(error) { "Live player error" }
-
-                        _uiState.update {
-                            it.copy(
-                                playerState = LivePlayerState.Error,
-                                isBuffering = false,
-                                errorMessage = error.message,
-                            )
-                        }
-                    }
-
-                    override fun onReady() {
-                        _uiState.update {
-                            it.copy(playerState = LivePlayerState.Playing, isBuffering = false)
-                        }
-                    }
-
-                    override fun onPlay() {
-                        _uiState.update { it.copy(playerState = LivePlayerState.Playing) }
-                    }
-
-                    override fun onPause() {
-                        _uiState.update { it.copy(playerState = LivePlayerState.Paused) }
-                    }
-
-                    override fun onBuffering() {
-                        _uiState.update { it.copy(isBuffering = true) }
-                    }
-
-                    override fun onEnd() {
-                        _uiState.update { it.copy(playerState = LivePlayerState.Ended) }
-                    }
-
-                    override fun onSeekBack(seekBackIncrementMs: Long) {}
-
-                    override fun onSeekForward(seekForwardIncrementMs: Long) {}
-                },
-            )
+            videoPlayer?.setPlayerEventListener(videoPlayerListener)
+            videoPlayer?.initPlayer()
             videoPlayer?.setOptions()
         }
 
@@ -191,6 +178,8 @@ class LivePlayerViewModel
             danmakuPlayer: DanmakuPlayer? = null,
         ) {
             this.danmakuPlayer = danmakuPlayer
+            // 账号云端屏蔽规则通常已在 App 启动时预热；这里兜底补拉，失败不阻塞直播
+            danmakuFilterRepository.prefetch()
             loadLiveInternal(roomId)
         }
 
@@ -209,7 +198,7 @@ class LivePlayerViewModel
 
         private fun loadLiveInternal(roomId: Long) {
             viewModelScope.launch {
-                _uiState.update { it.copy(playerState = LivePlayerState.Loading) }
+                _uiState.update { it.copy(playerState = LivePlayerState.Loading, isBuffering = true) }
 
                 runCatching {
                     val roomInit = liveRepository.getRoomInit(roomId.toInt())
@@ -217,34 +206,32 @@ class LivePlayerViewModel
                     _uiState.update { it.copy(realRoomId = realRoomId, liveStatus = roomInit.liveStatus) }
 
                     val roomInfo = liveRepository.getRoomInfo(realRoomId)
+                    // /room/v1/Room/get_info 不含 uname/face，需再查用户卡片补全主播名称与头像
+                    val anchorCard =
+                        runCatching { liveRepository.getAnchorCard(roomInfo.uid) }
+                            .onFailure { logger.warn(it) { "Failed to fetch anchor card: uid=${roomInfo.uid}" } }
+                            .getOrNull()
                     _uiState.update {
-                        val newState =
-                            it.copy(
-                                title = roomInfo.title.ifBlank { _uiState.value.title },
-                                cover = roomInfo.cover.ifBlank { roomInfo.keyframe },
-                                areaName = roomInfo.areaV2Name,
-                                onlineCount = formatOnlineCount(roomInfo.online),
-                            )
-                        newState
+                        it.withRoomInfo(
+                            roomInfo = roomInfo,
+                            anchorName = anchorCard?.name ?: "",
+                            anchorFace = anchorCard?.face ?: "",
+                        )
                     }
 
-                    val requestedQn = _uiState.value.currentQuality.takeIf { it > 0 } ?: 0
-                    val playInfo = liveRepository.getLivePlayInfo(realRoomId, requestedQn)
+                    val requestedKey = _uiState.value.currentQuality.takeIf { it > 0 } ?: 0
+                    val playInfo = liveRepository.getLivePlayInfo(realRoomId, requestedKey)
                     val line = resolveLine(playInfo, _uiState.value.currentLine)
                     if (line == null) {
-                        _uiState.update {
-                            it.copy(
-                                playerState = LivePlayerState.Error,
-                                errorMessage = "获取直播流地址失败",
-                            )
-                        }
+                        failPlayback("获取直播流地址失败")
                         return@launch
                     }
 
                     _uiState.update {
+                        val qualities = filterDecodableQualities(playInfo.qualities)
                         it.copy(
-                            availableQualities = playInfo.qualities,
-                            currentQuality = playInfo.currentQn.takeIf { qn -> qn > 0 } ?: requestedQn,
+                            availableQualities = qualities,
+                            currentQuality = resolveCurrentKey(qualities, playInfo.currentKey, requestedKey),
                             availableLines = playInfo.lines,
                             currentLine = line.order,
                         )
@@ -260,13 +247,18 @@ class LivePlayerViewModel
                 }.onFailure { error ->
                     if (error is CancellationException) throw error
                     logger.error(error) { "Failed to load live" }
-                    _uiState.update {
-                        it.copy(
-                            playerState = LivePlayerState.Error,
-                            errorMessage = error.message,
-                        )
-                    }
+                    failPlayback(error.toPlaybackLoadErrorMessage())
                 }
+            }
+        }
+
+        /** 置错误态并清掉缓冲标记（错误浮层优先于转圈，残留缓冲会让重连误判）。 */
+        private fun failPlayback(message: String) {
+            _uiState.update {
+                it.copy(
+                    playerState = LivePlayerState.Error(message),
+                    isBuffering = false,
+                )
             }
         }
 
@@ -319,8 +311,8 @@ class LivePlayerViewModel
                                 appendLine("stream: ${player.streamProtocol}")
                                 val qnDesc =
                                     state.availableQualities
-                                        .firstOrNull { it.first == state.currentQuality }
-                                        ?.second
+                                        .firstOrNull { it.key == state.currentQuality }
+                                        ?.displayDesc
                                 appendLine("quality: ${qnDesc ?: "?"}(${state.currentQuality})")
                                 appendLine("line: ${state.currentLine}/${state.availableLines.size}")
                                 appendLine("roomId: ${state.realRoomId}")
@@ -344,12 +336,13 @@ class LivePlayerViewModel
          * 处理直播弹幕事件。
          *
          * WebSocket 回调运行在 IO 线程，需切换到主线程操作弹幕播放器。
+         * `internal` 供单元测试直接驱动事件（生产环境只由 WebSocket 调用）。
          */
-        private fun handleLiveEvent(event: LiveEvent) {
+        internal fun handleLiveEvent(event: LiveEvent) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
                 when (event) {
                     is DanmakuEvent -> {
-                        sendDanmaku(event.content, event.mid)
+                        sendDanmaku(event.content, event.mid, event.mode, event.color)
                     }
                     is OnlineRankCountEvent -> {
                         _uiState.update {
@@ -379,29 +372,58 @@ class LivePlayerViewModel
             return positionMs
         }
 
+        /** 将直播弹幕送入引擎，先套用账号云端屏蔽规则；mode 4/5 显示为底部/顶部，其余滚动。 */
         private fun sendDanmaku(
             content: String,
             mid: Long,
+            mode: Int = 1,
+            textColor: Int = 0xFFFFFF,
         ) {
             val player = danmakuPlayer ?: return
             val positionMs = activeDanmakuPosition(player) ?: return
-            val danmakuId = danmakuIdCounter++
+            if (danmakuFilterRepository.shouldDropLive(content = content, mid = mid)) return
             val data =
-                DanmakuItemData(
-                    danmakuId = danmakuId,
-                    position = positionMs,
+                buildLiveDanmakuData(
+                    danmakuId = danmakuIdCounter++,
                     content = content,
-                    mode = DanmakuItemData.DANMAKU_MODE_ROLLING,
-                    textSize = 25,
-                    textColor = 0xFFFFFF,
-                    score = 0,
-                    danmakuStyle = 0,
-                    rank = 0,
-                    userId = mid,
-                    mergedType = DanmakuItemData.MERGED_TYPE_NORMAL,
+                    mid = mid,
+                    mode = mode,
+                    textColor = textColor,
+                    position = positionMs,
                 )
             player.send(data)
         }
+
+        /**
+         * 构造直播弹幕渲染数据（mode 4/5 → 底部/顶部，其余滚动）。
+         *
+         * 独立为纯函数便于单测验证 mode/color 透传，避免依赖弹幕引擎。
+         */
+        internal fun buildLiveDanmakuData(
+            danmakuId: Long,
+            content: String,
+            mid: Long,
+            mode: Int,
+            textColor: Int,
+            position: Long,
+        ): DanmakuItemData =
+            DanmakuItemData(
+                danmakuId = danmakuId,
+                position = position,
+                content = content,
+                mode =
+                    when (mode) {
+                        4 -> DanmakuItemData.DANMAKU_MODE_CENTER_BOTTOM
+                        5 -> DanmakuItemData.DANMAKU_MODE_CENTER_TOP
+                        else -> DanmakuItemData.DANMAKU_MODE_ROLLING
+                    },
+                textSize = 25,
+                textColor = textColor,
+                score = 0,
+                danmakuStyle = 0,
+                rank = 0,
+                userId = mid,
+            )
 
         /**
          * 播放/暂停切换。
@@ -418,11 +440,13 @@ class LivePlayerViewModel
         /**
          * 切换画质。
          *
-         * 切换后线路重置为第一条（qn 变化会导致可用线路集合变化）。
+         * 切换后线路重置为第一条（档位变化会导致可用线路集合变化）。
+         *
+         * @param key 目标画质档位标识（[LiveQuality.key]）
          */
-        fun changeQuality(qn: Int) {
-            _uiState.update { it.copy(currentQuality = qn, currentLine = 0) }
-            reloadAndPlay(qn)
+        fun changeQuality(key: Int) {
+            _uiState.update { it.copy(currentQuality = key, currentLine = 0) }
+            reloadAndPlay(key)
         }
 
         /**
@@ -441,22 +465,33 @@ class LivePlayerViewModel
         /**
          * 重新拉取直播流信息并播放当前选中的线路。
          *
-         * @param qn 目标画质（0 = 自动）
+         * @param key 目标画质档位标识（[LiveQuality.key]，0 = 自动）
          */
-        private fun reloadAndPlay(qn: Int) {
+        private fun reloadAndPlay(key: Int) {
             val realRoomId = _uiState.value.realRoomId
             if (realRoomId == 0) return
 
             viewModelScope.launch {
+                // 换档/换线路期间进入加载态并清掉旧错误，避免错误浮层压住新的加载状态
+                _uiState.update {
+                    it.copy(playerState = LivePlayerState.Loading, isBuffering = true)
+                }
                 runCatching {
-                    val playInfo = liveRepository.getLivePlayInfo(realRoomId, qn)
+                    val playInfo = liveRepository.getLivePlayInfo(realRoomId, key)
                     val line =
                         resolveLine(playInfo, _uiState.value.currentLine)
                             ?: error("获取直播流地址失败")
                     _uiState.update {
+                        // 响应未下发画质时保留既有列表；否则以过滤结果为准，避免残留已判定不可解的 HDR 档
+                        val qualities =
+                            if (playInfo.qualities.isEmpty()) {
+                                it.availableQualities
+                            } else {
+                                filterDecodableQualities(playInfo.qualities)
+                            }
                         it.copy(
-                            availableQualities = playInfo.qualities.ifEmpty { it.availableQualities },
-                            currentQuality = playInfo.currentQn.takeIf { current -> current > 0 } ?: qn,
+                            availableQualities = qualities,
+                            currentQuality = resolveCurrentKey(qualities, playInfo.currentKey, key),
                             availableLines = playInfo.lines,
                             currentLine = line.order,
                         )
@@ -467,15 +502,48 @@ class LivePlayerViewModel
                 }.onFailure { error ->
                     if (error is CancellationException) throw error
                     logger.error(error) { "Failed to reload live stream" }
-                    _uiState.update {
-                        it.copy(
-                            playerState = LivePlayerState.Error,
-                            isBuffering = false,
-                            errorMessage = error.message,
-                        )
-                    }
+                    failPlayback(error.toPlaybackLoadErrorMessage())
                 }
             }
+        }
+
+        /** 隐藏本机无法解码的 HDR 档（SDR 始终保留），避免选中后播放失败。 */
+        private fun filterDecodableQualities(qualities: List<LiveQuality>): List<LiveQuality> =
+            qualities.filter { quality ->
+                if (!quality.isHdr) return@filter true
+                val decodable = videoCapabilityProvider.isDecodable(quality.toDecodeProfile())
+                if (!decodable) {
+                    logger.info { "HDR quality ${quality.key}(${quality.displayDesc}) filtered: not decodable" }
+                }
+                decodable
+            }
+
+        /** 档位被能力过滤或服务端降级移除时回退到首项，保证选中态与请求 key 有效。 */
+        private fun resolveCurrentKey(
+            qualities: List<LiveQuality>,
+            currentKey: Int,
+            fallbackKey: Int,
+        ): Int =
+            currentKey.takeIf { k -> k > 0 && qualities.any { it.key == k } }
+                ?: qualities.firstOrNull()?.key
+                ?: fallbackKey
+
+        /** 从 HDR 档的解码提示构造 [VideoDecodeProfile]；dvh1/dvhe 为杜比视界。 */
+        private fun LiveQuality.toDecodeProfile(): VideoDecodeProfile {
+            val codec =
+                when {
+                    codecs?.startsWith("dvh1") == true || codecs?.startsWith("dvhe") == true -> VideoCodec.DVH1
+                    codecName?.contains("hevc") == true -> VideoCodec.HEVC
+                    codecName?.contains("av1") == true -> VideoCodec.AV1
+                    else -> VideoCodec.AVC
+                }
+            return VideoDecodeProfile(
+                codec = codec,
+                width = width,
+                height = height,
+                frameRate = null,
+                codecs = codecs,
+            )
         }
 
         /**
@@ -512,3 +580,28 @@ class LivePlayerViewModel
             detachPlayer()
         }
     }
+
+/**
+ * 将直播间信息合并进 UI 状态。
+ *
+ * 标题/封面缺失时保留进入页面时路由带来的值；主播信息用于控制条上的 UP 主主页入口。
+ * `uname`/`face` 可能由外部接口（用户卡片）补全，为空时回退到 [roomInfo] 中的字段。
+ *
+ * @param roomInfo `GET /room/v1/Room/get_info` 返回的直播间信息
+ * @param anchorName 用户卡片接口补全的主播昵称
+ * @param anchorFace 用户卡片接口补全的主播头像
+ */
+internal fun LivePlayerUiState.withRoomInfo(
+    roomInfo: RoomInfoData,
+    anchorName: String = "",
+    anchorFace: String = "",
+): LivePlayerUiState =
+    copy(
+        title = roomInfo.title.ifBlank { title },
+        cover = roomInfo.cover.ifBlank { roomInfo.keyframe },
+        areaName = roomInfo.areaV2Name,
+        onlineCount = formatOnlineCount(roomInfo.online),
+        upMid = roomInfo.uid,
+        upName = anchorName.ifBlank { roomInfo.uname },
+        upFace = anchorFace.ifBlank { roomInfo.face },
+    )

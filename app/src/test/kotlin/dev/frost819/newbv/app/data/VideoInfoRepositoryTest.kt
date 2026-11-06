@@ -61,10 +61,11 @@ class VideoInfoRepositoryTest {
     private fun fakeVideoDetail(
         relatedVideos: List<RelatedVideo> = emptyList(),
         history: VideoDetail.History = VideoDetail.History(0, 0),
+        aid: Long = 1L,
     ): VideoDetail =
         VideoDetail(
             bvid = "BV1xx",
-            aid = 1L,
+            aid = aid,
             cid = 10L,
             cover = "",
             title = "test",
@@ -247,6 +248,31 @@ class VideoInfoRepositoryTest {
             advanceUntilIdle()
 
             coVerify { videoDetailRepository.getVideoDetail(1L, ApiType.Web, "") }
+        }
+
+    @Test
+    fun `loadVideoDetail discards stale response from an older request`() =
+        runTest(testDispatcher) {
+            // 快速切视频：视频 1 的请求先发后至，不得覆盖视频 2 的详情
+            val firstResponseGate = CompletableDeferred<Unit>()
+            var callCount = 0
+            coEvery { videoDetailRepository.getVideoDetail(any(), any(), any()) } coAnswers {
+                callCount++
+                if (callCount == 1) {
+                    firstResponseGate.await()
+                    fakeVideoDetail(aid = 1L)
+                } else {
+                    fakeVideoDetail(aid = 2L)
+                }
+            }
+
+            val firstRequest = launch { repository.loadVideoDetail(aid = 1L, preferApiType = ApiType.Web) }
+            runCurrent()
+            repository.loadVideoDetail(aid = 2L, preferApiType = ApiType.Web)
+            firstResponseGate.complete(Unit)
+            firstRequest.join()
+
+            assertThat(repository.videoDetail.value?.aid).isEqualTo(2L)
         }
 
     // ── updateUgcPages ───────────────────────────────────────────────

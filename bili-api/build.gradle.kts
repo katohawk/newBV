@@ -24,7 +24,6 @@ dependencies {
     implementation(project(":bili-api-grpc"))
 
     implementation(libs.brotli)
-    implementation(libs.jsoup)
     implementation(libs.kotlinx.coroutines)
     implementation(libs.kotlinx.serialization)
     implementation(libs.ktor.client.content.negotiation)
@@ -32,6 +31,8 @@ dependencies {
     implementation(libs.ktor.client.encoding)
     implementation(libs.ktor.client.okhttp)
     implementation(libs.ktor.client.serialization.kotlinx)
+    implementation(libs.okhttp)
+    implementation(libs.okio)
 
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.kotlin.test)

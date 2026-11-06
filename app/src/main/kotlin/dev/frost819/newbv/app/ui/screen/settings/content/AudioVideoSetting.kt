@@ -34,7 +34,7 @@ import dev.frost819.newbv.data.datastore.VideoCodec
 /**
  * 音视频设置页。
  *
- * 画质/编码/音轨/倍速/播放结束动作/快捷键/软解/FFmpeg 音频。
+ * 画质/编码/音轨/倍速/播放结束动作/快捷键/软解。
  */
 @Composable
 fun AudioVideoSetting(modifier: Modifier = Modifier) {
