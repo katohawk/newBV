@@ -18,7 +18,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -142,7 +141,6 @@ fun VideoPlayerController(
 
     LaunchedEffect(showClickableControllers, isMaskEditing) {
         if (!showClickableControllers && !isMaskEditing) {
-            withFrameNanos { }
             controllerFocus.requestFocus()
         }
     }
@@ -199,7 +197,9 @@ fun VideoPlayerController(
             onHide = { hideController() },
         )
 
-    fun startSeekCountdown() {
+    fun startSeekCountdown(restart: Boolean = true) {
+        // 连续按方向键只更新跳转目标，避免一直重置倒计时。
+        if (!restart && seekCountdown?.isActive == true) return
         seekCountdown?.cancel()
         seekCountdown =
             scope.launch {
@@ -214,13 +214,13 @@ fun VideoPlayerController(
     fun onDirectionLeft() {
         if (!isSeeking) goTime = seekerState.value.currentTime
         onTimeBack()
-        startSeekCountdown()
+        startSeekCountdown(restart = false)
     }
 
     fun onDirectionRight() {
         if (!isSeeking) goTime = seekerState.value.currentTime
         onTimeForward()
-        startSeekCountdown()
+        startSeekCountdown(restart = false)
     }
 
     fun onSeekGoTime() {
@@ -605,7 +605,6 @@ fun VideoPlayerController(
 
             // 信息栏 + 进度条 + 按钮
             ControllerVideoInfo(
-                modifier = Modifier.focusable(),
                 show = showInfoSeekController,
                 isSeeking = isSeeking,
                 goTime = goTime,

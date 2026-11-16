@@ -70,6 +70,27 @@ class GridTabNavigationTest {
     }
 
     @Test
+    fun recording_focus_does_not_pull_focus_back_from_another_control() {
+        val tracked = FocusRequester()
+        val other = FocusRequester()
+        composeRule.setContent {
+            val saver = rememberFocusSaver()
+            saver.RestoreFocus()
+            Row {
+                Box(Modifier.width(40.dp).height(40.dp).focusRequester(tracked).focusSaverItem(saver, "card").focusable())
+                Box(Modifier.width(40.dp).height(40.dp).testTag("other").focusRequester(other).focusable())
+            }
+        }
+
+        composeRule.runOnIdle {
+            tracked.requestFocus()
+            other.requestFocus()
+        }
+        composeRule.mainClock.advanceTimeBy(100)
+        composeRule.onNodeWithTag("other").assertIsFocused()
+    }
+
+    @Test
     fun left_boundary_can_focus_selected_sidebar_without_changing_page() {
         val sidebarRequester = FocusRequester()
         val cardRequester = FocusRequester()

@@ -49,6 +49,7 @@ class RelatedVideosNavigationTest {
     private val selectedSeasons = mutableListOf<Int?>()
     private var playbackChanges = 0
     private var seeks = 0
+    private var lastSeekPosition = 0L
     private var exits = 0
 
     private fun videos(count: Int = 20) =
@@ -82,7 +83,10 @@ class RelatedVideosNavigationTest {
                     onPlay = { playbackChanges++ },
                     onPause = { playbackChanges++ },
                     onExit = { exits++ },
-                    onGoTime = { seeks++ },
+                    onGoTime = { position ->
+                        seeks++
+                        lastSeekPosition = position
+                    },
                     onBackToStart = {},
                     onCancelSkipToNextEp = {},
                     onPlayNewVideo = {},
@@ -145,6 +149,34 @@ class RelatedVideosNavigationTest {
         composeRule.onNode(
             isFocused() and hasAnyAncestor(hasTestTag("related_${aid}_0")),
         )
+
+    @Test
+    fun repeated_right_presses_commit_latest_seek_without_waiting_for_idle() {
+        content()
+        composeRule.mainClock.autoAdvance = false
+
+        press(Key.DirectionRight)
+        composeRule.mainClock.advanceTimeBy(300)
+        press(Key.DirectionRight)
+        composeRule.mainClock.advanceTimeBy(300)
+        press(Key.DirectionRight)
+        composeRule.runOnIdle { assertThat(seeks).isEqualTo(0) }
+
+        composeRule.mainClock.advanceTimeBy(450)
+        composeRule.runOnIdle {
+            assertThat(seeks).isEqualTo(1)
+            assertThat(lastSeekPosition).isEqualTo(150_000L)
+        }
+    }
+
+    @Test
+    fun first_confirm_toggles_playback_once() {
+        content()
+
+        press(Key.DirectionCenter)
+
+        composeRule.runOnIdle { assertThat(playbackChanges).isEqualTo(1) }
+    }
 
     @Test
     fun menu_key_opens_panel_and_wraps_without_seeking_then_confirm_plays_once() {

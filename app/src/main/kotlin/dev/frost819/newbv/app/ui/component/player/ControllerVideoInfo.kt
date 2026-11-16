@@ -304,8 +304,8 @@ fun ControllerVideoInfoBottom(
     var isSeekFocused by remember { mutableStateOf(false) }
 
     LaunchedEffect(restoreButtonFocus) {
-        delay(50)
         if (restoreButtonFocus) {
+            delay(50)
             val key = buttonFocusSaver.savedKeyValue().ifEmpty { "播放/暂停" }
             buttonFocusSaver.focusRequesterFor(key).requestFocus()
         } else {

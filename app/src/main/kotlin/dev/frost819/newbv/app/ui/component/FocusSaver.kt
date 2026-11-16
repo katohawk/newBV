@@ -72,12 +72,15 @@ class FocusSaver(
      */
     @Composable
     fun RestoreFocus() {
-        LaunchedEffect(savedKey.value) {
-            val key = savedKey.value
+        val key = savedKey.value
+        LaunchedEffect(this) {
             if (key.isNotEmpty()) {
                 requesters[key]?.let {
                     kotlinx.coroutines.delay(50)
-                    runCatching { it.requestFocus() }
+                    // 用户已经移到其他条目时，放弃本次恢复。
+                    if (savedKey.value == key) {
+                        runCatching { it.requestFocus() }
+                    }
                 }
             }
         }
