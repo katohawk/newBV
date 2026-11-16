@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import dev.frost819.newbv.app.ui.component.videocard.VideoCardData
 import dev.frost819.newbv.app.ui.component.videocard.isPgc
 import dev.frost819.newbv.biliapi.entity.video.RelatedVideo
+import dev.frost819.newbv.biliapi.entity.video.season.PgcSeason
 import org.junit.jupiter.api.Test
 
 /**
@@ -67,4 +68,17 @@ class VideoCardDataTest {
             danmaku = 0,
             pubdate = pubdate,
         )
+
+    @Test
+    fun `season recommendation preserves season identity and uses horizontal cover`() {
+        val card = VideoCardData.fromRelatedSeason(PgcSeason(200, "番剧", "全12集", "poster", "wide"))
+        assertThat(card.isPgc).isTrue()
+        assertThat(card.seasonId).isEqualTo(200)
+        assertThat(card.epid).isNull()
+        assertThat(card.avid).isEqualTo(0L)
+        assertThat(card.cover).isEqualTo("wide")
+        assertThat(card.upName).isEmpty()
+        val fallback = VideoCardData.fromRelatedSeason(PgcSeason(300, "电影", "", "poster", null))
+        assertThat(fallback.cover).isEqualTo("poster")
+    }
 }

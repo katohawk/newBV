@@ -68,6 +68,7 @@ fun MenuListItem(
         label = "MenuListItem width [$text]",
     )
 
+    val colors = MaterialTheme.colorScheme
     Surface(
         modifier =
             modifier
@@ -78,12 +79,12 @@ fun MenuListItem(
         shape = ClickableSurfaceDefaults.shape(shape = MaterialTheme.shapes.small),
         colors =
             ClickableSurfaceDefaults.colors(
-                containerColor =
-                    if (selected) {
-                        MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.4f)
-                    } else {
-                        Color.Transparent
-                    },
+                containerColor = if (selected) colors.primaryContainer else Color.Transparent,
+                contentColor = if (selected) colors.onPrimaryContainer else colors.onSurface,
+                focusedContainerColor = colors.primary,
+                focusedContentColor = colors.onPrimary,
+                pressedContainerColor = colors.primary,
+                pressedContentColor = colors.onPrimary,
             ),
     ) {
         Box {

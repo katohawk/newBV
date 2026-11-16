@@ -3,6 +3,7 @@ package dev.frost819.newbv.app.ui.component.videocard
 import dev.frost819.newbv.app.util.formatHourMinSec
 import dev.frost819.newbv.app.util.toWanString
 import dev.frost819.newbv.biliapi.entity.video.RelatedVideo
+import dev.frost819.newbv.biliapi.entity.video.season.PgcSeason
 import dev.frost819.newbv.biliapi.http.util.toSmartDate
 
 /**
@@ -24,6 +25,7 @@ import dev.frost819.newbv.biliapi.http.util.toSmartDate
  * @property timeString 时长显示字符串（已格式化）。
  * @property pubTime 发布时间显示字符串。
  * @property progress 播放进度比例（0.0–1.0），null 表示不显示进度条。
+ * @property seasonId 剧集推荐的季度 ID，用于没有具体分集 ID 时进入剧集详情。
  */
 data class VideoCardData(
     val avid: Long,
@@ -39,8 +41,19 @@ data class VideoCardData(
     val timeString: String = "",
     val pubTime: String? = null,
     val progress: Float? = null,
+    val seasonId: Int? = null,
 ) {
     companion object {
+        /** 把剧集推荐转换为封面卡片，优先使用横向分集封面。 */
+        fun fromRelatedSeason(season: PgcSeason): VideoCardData =
+            VideoCardData(
+                avid = 0,
+                seasonId = season.seasonId,
+                title = season.title.orEmpty(),
+                cover = season.horizontalCover ?: season.cover,
+                upName = "",
+            )
+
         /**
          * 由相关视频 [RelatedVideo] 转换。
          *
@@ -63,5 +76,5 @@ data class VideoCardData(
     }
 }
 
-/** 视频卡是否为番剧（有有效 EP ID）。 */
-val VideoCardData.isPgc: Boolean get() = (epid ?: 0) != 0
+/** 视频卡是否为剧集（有分集 ID 或季度 ID）。 */
+val VideoCardData.isPgc: Boolean get() = (epid ?: 0) != 0 || (seasonId ?: 0) > 0

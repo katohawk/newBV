@@ -215,7 +215,7 @@ class SeasonDetailViewModel
          * 点击播放按钮。
          *
          * 优先续播本地记录的最近分集（本会话内刚播放过的），
-         * 其次使用服务端观看记录，最后播放第一集。
+         * 其次使用服务端观看记录；记录在正片最后一集时从第一集重新开始。
          */
         fun onPlay() {
             val detail = _uiState.value.seasonDetail ?: return
@@ -223,7 +223,7 @@ class SeasonDetailViewModel
             val lastCid = _uiState.value.historyLastPlayedCid
             if (lastCid != 0L) {
                 findEpisodeByCid(detail, lastCid)?.let {
-                    emitNavigateToPlayer(it, _uiState.value.historyLastPlayedTime.coerceAtLeast(0))
+                    resumeEpisode(detail, it, _uiState.value.historyLastPlayedTime)
                     return
                 }
             }
@@ -232,7 +232,7 @@ class SeasonDetailViewModel
             if (progress != null) {
                 val lastEp = findEpisodeById(detail, progress.lastEpId)
                 if (lastEp != null) {
-                    emitNavigateToPlayer(lastEp, progress.lastTime.coerceAtLeast(0))
+                    resumeEpisode(detail, lastEp, progress.lastTime)
                     return
                 }
             }
@@ -240,6 +240,19 @@ class SeasonDetailViewModel
             val firstEp = detail.episodes.firstOrNull()
             if (firstEp != null) {
                 emitNavigateToPlayer(firstEp)
+            }
+        }
+
+        private fun resumeEpisode(
+            detail: SeasonDetail,
+            episode: Episode,
+            position: Int,
+        ) {
+            // 最后一集的续播记录视为整季看完，方便再次进入时从头观看。
+            if (detail.episodes.size > 1 && episode.cid == detail.episodes.last().cid) {
+                emitNavigateToPlayer(detail.episodes.first())
+            } else {
+                emitNavigateToPlayer(episode, position.coerceAtLeast(0))
             }
         }
 

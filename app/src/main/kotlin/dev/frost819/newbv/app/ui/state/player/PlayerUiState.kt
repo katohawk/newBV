@@ -65,6 +65,10 @@ data class PlayerUiState(
     // 列表
     val videoList: List<VideoListItem> = emptyList(),
     val relatedVideos: List<VideoCardData> = emptyList(),
+    /** 当前剧集推荐是否正在加载。 */
+    val relatedLoading: Boolean = false,
+    /** 当前剧集推荐是否加载失败，可独立重试。 */
+    val relatedError: Boolean = false,
 ) {
     /**
      * 是否为番剧（PGC）播放内容。

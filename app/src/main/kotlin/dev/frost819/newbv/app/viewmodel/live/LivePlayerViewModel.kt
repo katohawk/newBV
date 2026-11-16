@@ -163,7 +163,6 @@ class LivePlayerViewModel
                 )
             videoPlayer = exoPlayerFactory.create(context, options)
             videoPlayer?.setPlayerEventListener(videoPlayerListener)
-            videoPlayer?.initPlayer()
             videoPlayer?.setOptions()
         }
 
@@ -379,9 +378,9 @@ class LivePlayerViewModel
             mode: Int = 1,
             textColor: Int = 0xFFFFFF,
         ) {
+            if (danmakuFilterRepository.shouldDropLive(content = content, mid = mid)) return
             val player = danmakuPlayer ?: return
             val positionMs = activeDanmakuPosition(player) ?: return
-            if (danmakuFilterRepository.shouldDropLive(content = content, mid = mid)) return
             val data =
                 buildLiveDanmakuData(
                     danmakuId = danmakuIdCounter++,

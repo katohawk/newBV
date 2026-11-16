@@ -5,31 +5,35 @@ import androidx.compose.ui.graphics.Color
 /**
  * new BV 品牌色板。
  *
- * 以低饱和蓝紫与青绿色为核心，延伸出辅助色与中性色。
- * 所有颜色以 `Color` 表示，供 [BVTheme] 构建 colorScheme。
+ * 以哔哩哔哩粉为主色，深浅主题分别使用独立的文字和容器色。
  */
 object BVColors {
-    /** 低饱和蓝紫，作为 new BV 的主品牌色。 */
-    val Primary = Color(0xFF7773AD)
+    /** 深色主题的交互强调色，来自哔哩哔哩官方小程序配色。 */
+    val Primary = Color(0xFFFB7299)
 
-    /** 深色背景下使用的主色变体。 */
-    val PrimaryStrong = Color(0xFF5E5A8B)
+    /** 浅色主题的交互强调色。 */
+    val PrimaryStrong = Color(0xFFA92B54)
 
-    /** 浅色背景下使用的主色变体。 */
-    val PrimaryLight = Color(0xFF9995CF)
+    /** 浅色主题的选中容器。 */
+    val PrimaryLight = Color(0xFFFFDCE7)
 
-    /** 低饱和青绿，用于辅助操作和信息状态。 */
-    val Secondary = Color(0xFF5B9B94)
-    val SecondaryLight = Color(0xFF79B8AE)
+    /** 深色主题的粉色按钮文字及选中容器。 */
+    val DarkOnPrimary = Color(0xFF280B17)
+    val DarkPrimaryContainer = Color(0xFF633044)
+    val DarkOnPrimaryContainer = Color(0xFFFFE1EA)
 
-    /** 浅色背景下使用的中性绿色变体，作为强调色文字/图标时保证对比度。 */
-    val SecondaryStrong = Color(0xFF3F7A73)
+    /** 次要交互沿用较柔和的玫瑰色。 */
+    val Secondary = Color(0xFFE7A2B6)
+    val SecondaryStrong = Color(0xFF873D55)
 
     /** 黄色，用于投币/警告。 */
     val Yellow = Color(0xFFC49B5C)
 
     /** 绿色，用于成功状态。 */
     val Green = Color(0xFF70A684)
+
+    /** 浅色背景上的成功文字。 */
+    val GreenStrong = Color(0xFF306347)
 
     /** 红色，用于错误/直播。 */
     val Red = Color(0xFFC87878)
@@ -41,14 +45,14 @@ object BVColors {
     val DarkOnBackground = Color(0xFFF2F2F2)
     val DarkOnSurface = Color(0xFFF2F2F2)
     val DarkOnSurfaceVariant = Color(0xFFB8B8B8)
-    val DarkBorder = PrimaryLight
+    val DarkBorder = Primary
 
     /** 浅色主题中性色。 */
-    val LightBackground = Color(0xFFF5F7FB)
+    val LightBackground = Color(0xFFFFFBFC)
     val LightSurface = Color(0xFFFFFFFF)
-    val LightSurfaceVariant = Color(0xFFE8ECF5)
-    val LightOnBackground = Color(0xFF172033)
-    val LightOnSurface = Color(0xFF172033)
-    val LightOnSurfaceVariant = Color(0xFF59657C)
+    val LightSurfaceVariant = Color(0xFFF7E9EE)
+    val LightOnBackground = Color(0xFF271A20)
+    val LightOnSurface = Color(0xFF271A20)
+    val LightOnSurfaceVariant = Color(0xFF66545D)
     val LightBorder = PrimaryStrong
 }

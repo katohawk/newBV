@@ -56,11 +56,11 @@ fun BVTheme(
         if (isDark) {
             tvDark(
                 primary = BVColors.Primary,
-                onPrimary = Color.White,
-                primaryContainer = BVColors.PrimaryStrong,
-                onPrimaryContainer = Color.White,
+                onPrimary = BVColors.DarkOnPrimary,
+                primaryContainer = BVColors.DarkPrimaryContainer,
+                onPrimaryContainer = BVColors.DarkOnPrimaryContainer,
                 secondary = BVColors.Secondary,
-                onSecondary = BVColors.DarkOnBackground,
+                onSecondary = BVColors.DarkOnPrimary,
                 secondaryContainer = BVColors.DarkSurfaceVariant,
                 onSecondaryContainer = BVColors.DarkOnSurface,
                 background = BVColors.DarkBackground,
@@ -70,6 +70,8 @@ fun BVTheme(
                 surfaceVariant = BVColors.DarkSurfaceVariant,
                 onSurfaceVariant = BVColors.DarkOnSurfaceVariant,
                 border = BVColors.DarkBorder,
+                inverseSurface = BVColors.PrimaryLight,
+                inverseOnSurface = BVColors.DarkOnPrimary,
             )
         } else {
             tvLight(
@@ -90,6 +92,8 @@ fun BVTheme(
                 surfaceVariant = BVColors.LightSurfaceVariant,
                 onSurfaceVariant = BVColors.LightOnSurfaceVariant,
                 border = BVColors.LightBorder,
+                inverseSurface = BVColors.DarkPrimaryContainer,
+                inverseOnSurface = BVColors.DarkOnPrimaryContainer,
             )
         }
 
@@ -97,11 +101,11 @@ fun BVTheme(
         if (isDark) {
             commonDark(
                 primary = BVColors.Primary,
-                onPrimary = Color.White,
-                primaryContainer = BVColors.PrimaryStrong,
-                onPrimaryContainer = Color.White,
+                onPrimary = BVColors.DarkOnPrimary,
+                primaryContainer = BVColors.DarkPrimaryContainer,
+                onPrimaryContainer = BVColors.DarkOnPrimaryContainer,
                 secondary = BVColors.Secondary,
-                onSecondary = BVColors.DarkOnBackground,
+                onSecondary = BVColors.DarkOnPrimary,
                 secondaryContainer = BVColors.DarkSurfaceVariant,
                 onSecondaryContainer = BVColors.DarkOnSurface,
                 background = BVColors.DarkBackground,
@@ -110,6 +114,8 @@ fun BVTheme(
                 onSurface = BVColors.DarkOnSurface,
                 surfaceVariant = BVColors.DarkSurfaceVariant,
                 onSurfaceVariant = BVColors.DarkOnSurfaceVariant,
+                outline = BVColors.DarkBorder,
+                surfaceTint = BVColors.Primary,
             )
         } else {
             commonLight(
@@ -127,6 +133,8 @@ fun BVTheme(
                 onSurface = BVColors.LightOnSurface,
                 surfaceVariant = BVColors.LightSurfaceVariant,
                 onSurfaceVariant = BVColors.LightOnSurfaceVariant,
+                outline = BVColors.LightBorder,
+                surfaceTint = BVColors.PrimaryStrong,
             )
         }
 
@@ -170,12 +178,13 @@ fun BVTheme(
 fun SystemBarsEffect() {
     val view = LocalView.current
     if (view.isInEditMode) return
-    val statusBarColor = TvMaterialTheme.colorScheme.primary
+    // Android 15 起透明状态栏显示页面底色，图标按同一主题底色选反差。
+    val statusBarColor = TvMaterialTheme.colorScheme.surface
     SideEffect {
         val window = (view.context as Activity).window
         window.statusBarColor = statusBarColor.toArgb()
-        // 状态栏图标外观由背景亮度决定：暗色状态栏配浅色图标，反之配深色图标
+        // 黑白图标对比度在相对亮度约 0.179 时相等，选对比度更高的一侧。
         WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars =
-            statusBarColor.luminance() > 0.5f
+            statusBarColor.luminance() > 0.179f
     }
 }

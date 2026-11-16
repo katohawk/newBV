@@ -11,7 +11,7 @@ private val logger = Loggers.get("VideoNavigation")
  * 视频卡统一导航入口。
  *
  * 按优先级决定目标：
- * 1. **番剧**（有有效 EP ID）→ 番剧详情页（[PgcFeatureRoute]）
+ * 1. **番剧**（有有效 EP ID 或季度 ID）→ 番剧详情页（[PgcFeatureRoute]）
  * 2. **普通视频** + `forceDetail || showVideoInfo` → 视频详情页（[VideoDetailRoute]）
  * 3. **普通视频** + 直进播放 → 播放器（[VideoPlayerRoute]），并弹出已有播放器保证单例
  *
@@ -27,8 +27,8 @@ fun NavController.navigateFromVideoCard(
     }
     val epid = data.epid?.takeIf { it != 0 }
     when {
-        epid != null -> {
-            navigate(PgcFeatureRoute(epid = epid.toLong()))
+        epid != null || (data.seasonId ?: 0) > 0 -> {
+            navigate(PgcFeatureRoute(epid = epid?.toLong() ?: 0L, seasonId = data.seasonId?.toLong() ?: 0L))
         }
 
         forceDetail || Prefs.showVideoInfo -> {

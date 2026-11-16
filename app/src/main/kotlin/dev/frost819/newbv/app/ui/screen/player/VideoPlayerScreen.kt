@@ -138,8 +138,7 @@ fun VideoPlayerScreen(
             subtitleId,
             subtitleData,
             subtitleList,
-            videoListState.videoList,
-            videoListState.relatedVideos,
+            videoListState,
         ) {
             uiState.copy(
                 danmakuState = danmakuState,
@@ -149,7 +148,14 @@ fun VideoPlayerScreen(
                 subtitleData = subtitleData,
                 subtitleList = subtitleList,
                 videoList = videoListState.videoList,
-                relatedVideos = videoListState.relatedVideos.map { VideoCardData.fromRelatedVideo(it) },
+                relatedVideos =
+                    if (uiState.isPgc) {
+                        videoListState.relatedSeasons.map { VideoCardData.fromRelatedSeason(it) }
+                    } else {
+                        videoListState.relatedVideos.map { VideoCardData.fromRelatedVideo(it) }
+                    },
+                relatedLoading = videoListState.relatedLoading,
+                relatedError = videoListState.relatedError,
             )
         }
 
@@ -171,8 +177,8 @@ fun VideoPlayerScreen(
     }
 
     // 相关视频归属随当前播放视频切换（播放器内切视频不会更新导航路由参数）
-    LaunchedEffect(uiState.aid) {
-        videoListViewModel.setCurrentAid(uiState.aid)
+    LaunchedEffect(uiState.aid, uiState.seasonId) {
+        videoListViewModel.setCurrentVideo(uiState.aid, if (uiState.isPgc) uiState.seasonId else 0)
     }
 
     // 切换视频事件：协调弹幕/字幕/蒙版重载
@@ -383,6 +389,7 @@ fun VideoPlayerScreen(
             }
         },
         onToggleDanmaku = { danmakuViewModel.toggleDanmaku() },
+        onRetryRelatedVideos = videoListViewModel::loadRelatedSeasons,
         onShowShortcutTip = { text -> playerViewModel.showShortcutTip(text) },
         screenMask = screenMask,
         isMaskEditing = isMaskEditing,

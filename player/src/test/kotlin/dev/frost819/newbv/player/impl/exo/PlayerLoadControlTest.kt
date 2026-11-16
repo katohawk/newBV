@@ -1,11 +1,12 @@
 package dev.frost819.newbv.player.impl.exo
 
 import androidx.media3.common.C
-import androidx.media3.common.Timeline
+import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.analytics.PlayerId
 import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.SinglePeriodTimeline
 import androidx.media3.exoplayer.source.TrackGroupArray
 import androidx.media3.exoplayer.trackselection.ExoTrackSelection
 import com.google.common.truth.Truth.assertThat
@@ -23,6 +24,9 @@ import org.junit.jupiter.api.Test
 @OptIn(UnstableApi::class)
 class PlayerLoadControlTest {
     private val playerId = PlayerId("test")
+
+    // Media3 1.11 会检查媒体周期所属窗口，不能传入没有任何周期的 Timeline.EMPTY。
+    private val timeline = SinglePeriodTimeline(120_000_000L, true, false, false, null, MediaItem.EMPTY)
     private lateinit var loadControl: LoadControl
 
     @BeforeEach
@@ -108,8 +112,8 @@ class PlayerLoadControlTest {
     private fun parameters(bufferedDurationUs: Long) =
         LoadControl.Parameters(
             playerId, // 与 onPrepared 使用同一实例
-            Timeline.EMPTY, // 不依赖播放列表内容
-            MediaSource.MediaPeriodId("test"), // 当前媒体周期
+            timeline,
+            MediaSource.MediaPeriodId(timeline.getUidOfPeriod(0)),
             0L, // playbackPositionUs
             bufferedDurationUs, // 唯一随用例变化的参数
             1f, // playbackSpeed

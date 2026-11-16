@@ -57,6 +57,9 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import dev.frost819.newbv.R
+import dev.frost819.newbv.app.ui.component.FocusSaver
+import dev.frost819.newbv.app.ui.component.focusSaverItem
+import dev.frost819.newbv.app.ui.component.rememberFocusSaver
 import dev.frost819.newbv.app.ui.state.player.SeekerState
 import dev.frost819.newbv.app.util.VideoShotImageCache
 import dev.frost819.newbv.app.util.formatHourMinSec
@@ -81,7 +84,7 @@ import kotlinx.coroutines.delay
  * @param onlineWatching 同时观看人数文案（空串时不显示）
  * @param videoShot 缩略图数据（为 null 时不显示预览）
  * @param videoShotCache 缩略图缓存
- * @param isPgc 是否来自番剧（为 true 时隐藏详情/UP/相关视频按钮）
+ * @param isPgc 是否来自番剧（为 true 时隐藏普通视频详情/UP按钮）
  * @param danmakuEnabled 弹幕是否开启
  * @param isLooping 是否循环播放
  * @param onDirectionLeft seek 左移回调
@@ -97,6 +100,8 @@ import kotlinx.coroutines.delay
  * @param onGoToUpPage 跳转 UP 主页面回调
  * @param onShowInteraction 打开视频交互弹窗回调
  * @param onShowComments 打开评论弹窗回调
+ * @param buttonFocusSaver 功能按钮焦点，用于从相关视频返回时恢复。
+ * @param restoreButtonFocus 显示时恢复功能按钮，否则默认聚焦进度条。
  */
 @Composable
 fun ControllerVideoInfo(
@@ -126,6 +131,8 @@ fun ControllerVideoInfo(
     onGoToUpPage: () -> Unit,
     onShowInteraction: () -> Unit,
     onShowComments: () -> Unit,
+    buttonFocusSaver: FocusSaver = rememberFocusSaver(),
+    restoreButtonFocus: Boolean = false,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         AnimatedVisibility(
@@ -172,6 +179,8 @@ fun ControllerVideoInfo(
                 onGoToUpPage = onGoToUpPage,
                 onShowInteraction = onShowInteraction,
                 onShowComments = onShowComments,
+                buttonFocusSaver = buttonFocusSaver,
+                restoreButtonFocus = restoreButtonFocus,
             )
         }
     }
@@ -258,6 +267,9 @@ fun ControllerVideoInfoTop(
 
 /**
  * 控制器底部信息（缩略图预览 + 时间 + 进度条 + 操作按钮）。
+ *
+ * @param buttonFocusSaver 记录功能按钮焦点，供相关视频返回时恢复。
+ * @param restoreButtonFocus 首次组合时恢复功能按钮，而非聚焦进度条。
  */
 @Composable
 fun ControllerVideoInfoBottom(
@@ -283,15 +295,22 @@ fun ControllerVideoInfoBottom(
     onGoToUpPage: () -> Unit,
     onShowInteraction: () -> Unit,
     onShowComments: () -> Unit,
+    buttonFocusSaver: FocusSaver = rememberFocusSaver(),
+    restoreButtonFocus: Boolean = false,
 ) {
     val seekFocusRequester = remember { FocusRequester() }
     val buttonsFocusRequester = remember { FocusRequester() }
 
     var isSeekFocused by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(restoreButtonFocus) {
         delay(50)
-        runCatching { seekFocusRequester.requestFocus() }
+        if (restoreButtonFocus) {
+            val key = buttonFocusSaver.savedKeyValue().ifEmpty { "播放/暂停" }
+            buttonFocusSaver.focusRequesterFor(key).requestFocus()
+        } else {
+            seekFocusRequester.requestFocus()
+        }
     }
 
     Column(
@@ -341,8 +360,8 @@ fun ControllerVideoInfoBottom(
                         shape =
                             androidx.compose.foundation.shape
                                 .RoundedCornerShape(8.dp),
-                    ).focusable()
-                    .focusRequester(seekFocusRequester)
+                    ).focusRequester(seekFocusRequester)
+                    .focusable()
                     .pointerInput(seekerState.totalDuration) {
                         awaitEachGesture {
                             val firstDown =
@@ -401,7 +420,7 @@ fun ControllerVideoInfoBottom(
 
                             Key.DirectionDown -> {
                                 if (it.type == KeyEventType.KeyUp) return@onKeyEvent true
-                                buttonsFocusRequester.requestFocus()
+                                if (it.nativeKeyEvent.repeatCount == 0) buttonsFocusRequester.requestFocus()
                                 true
                             }
 
@@ -410,7 +429,7 @@ fun ControllerVideoInfoBottom(
                     }.onFocusChanged { isSeekFocused = it.isFocused },
         ) {
             VideoProgressSeek(
-                modifier = Modifier.focusable().fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth(),
                 duration = seekerState.totalDuration,
                 position = if (isSeeking) goTime else seekerState.currentTime,
                 bufferedPercentage = seekerState.bufferedPercentage,
@@ -433,8 +452,8 @@ fun ControllerVideoInfoBottom(
                 if (!isPgc) {
                     add(ControllerIcon(R.drawable.info_24px, "视频信息", onGoToVideoInfo))
                     add(ControllerIcon(R.drawable.contact_page_24px, "up主页", onGoToUpPage))
-                    add(ControllerIcon(R.drawable.related_videos_24px, "相关视频", onShowRelatedVideos))
                 }
+                add(ControllerIcon(R.drawable.related_videos_24px, "相关视频", onShowRelatedVideos))
                 add(
                     ControllerIcon(
                         if (isLooping) R.drawable.repeat_one_on_24px else R.drawable.repeat_one_24px,
@@ -468,7 +487,7 @@ fun ControllerVideoInfoBottom(
                     .onKeyEvent {
                         if (it.key == Key.DirectionUp) {
                             if (it.type == KeyEventType.KeyUp) return@onKeyEvent true
-                            seekFocusRequester.requestFocus()
+                            if (it.nativeKeyEvent.repeatCount == 0) seekFocusRequester.requestFocus()
                             return@onKeyEvent true
                         }
                         false
@@ -479,9 +498,12 @@ fun ControllerVideoInfoBottom(
                 key(item.description) {
                     Surface(
                         modifier =
-                            buttonLoop(index == 0, index == icons.lastIndex).touchClickable(
-                                onClick = item.action,
-                            ),
+                            Modifier
+                                .focusSaverItem(buttonFocusSaver, item.description)
+                                .then(buttonLoop(index == 0, index == icons.lastIndex))
+                                .touchClickable(
+                                    onClick = item.action,
+                                ),
                         onClick = item.action,
                         shape = ClickableSurfaceDefaults.shape(shape = MaterialTheme.shapes.small),
                     ) {

@@ -8,14 +8,24 @@ import dev.frost819.newbv.biliapi.entity.video.RelatedVideo
 import dev.frost819.newbv.biliapi.entity.video.UserActions
 import dev.frost819.newbv.biliapi.entity.video.VideoDetail
 import dev.frost819.newbv.biliapi.entity.video.VideoPage
+import dev.frost819.newbv.biliapi.entity.video.season.PgcSeason
+import dev.frost819.newbv.biliapi.repositories.SeasonRepository
 import dev.frost819.newbv.biliapi.repositories.VideoDetailRepository
+import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -31,6 +41,7 @@ class VideoListViewModelTest {
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var videoInfoRepository: VideoInfoRepository
     private lateinit var videoDetailRepository: VideoDetailRepository
+    private val seasonRepository = mockk<SeasonRepository>()
     private lateinit var viewModel: VideoListViewModel
 
     private val sampleVideoList =
@@ -45,7 +56,7 @@ class VideoListViewModelTest {
         Dispatchers.setMain(testDispatcher)
         videoDetailRepository = mockk()
         videoInfoRepository = VideoInfoRepository(videoDetailRepository, io.mockk.mockk(relaxed = true))
-        viewModel = VideoListViewModel(videoInfoRepository)
+        viewModel = VideoListViewModel(videoInfoRepository, seasonRepository)
     }
 
     @AfterEach
@@ -268,9 +279,9 @@ class VideoListViewModelTest {
         }
 
     @Test
-    fun `setCurrentAid sets current aid`() =
+    fun `setCurrentVideo accepts an ordinary video without season`() =
         runTest(testDispatcher) {
-            viewModel.setCurrentAid(42L)
+            viewModel.setCurrentVideo(42L, 0)
             assertThat(viewModel.videoListState.value.videoList).isEmpty()
         }
 
@@ -319,7 +330,7 @@ class VideoListViewModelTest {
             videoInfoRepository.updateVideoDetail(
                 fakeVideoDetail(aid = 1, relatedVideos = listOf(fakeRelatedVideo(11))),
             )
-            viewModel.setCurrentAid(1L)
+            viewModel.setCurrentVideo(1L, 0)
             advanceUntilIdle()
             val firstRelatedAids =
                 viewModel.videoListState.value.relatedVideos
@@ -330,7 +341,7 @@ class VideoListViewModelTest {
             videoInfoRepository.updateVideoDetail(
                 fakeVideoDetail(aid = 2, relatedVideos = listOf(fakeRelatedVideo(21), fakeRelatedVideo(22))),
             )
-            viewModel.setCurrentAid(2L)
+            viewModel.setCurrentVideo(2L, 0)
             advanceUntilIdle()
 
             val secondRelatedAids =
@@ -345,7 +356,7 @@ class VideoListViewModelTest {
             videoInfoRepository.updateVideoDetail(
                 fakeVideoDetail(aid = 1, relatedVideos = listOf(fakeRelatedVideo(11))),
             )
-            viewModel.setCurrentAid(2L)
+            viewModel.setCurrentVideo(2L, 0)
             advanceUntilIdle()
 
             // 不得把视频 1 的相关视频串到视频 2
@@ -358,13 +369,48 @@ class VideoListViewModelTest {
             videoInfoRepository.updateVideoDetail(
                 fakeVideoDetail(aid = 1, relatedVideos = listOf(fakeRelatedVideo(11))),
             )
-            viewModel.setCurrentAid(1L)
+            viewModel.setCurrentVideo(1L, 0)
             advanceUntilIdle()
             assertThat(viewModel.videoListState.value.relatedVideos).isNotEmpty()
 
             // 切到 B 但 B 的详情还没返回：先清空，避免显示 A 的列表
-            viewModel.setCurrentAid(2L)
+            viewModel.setCurrentVideo(2L, 0)
             advanceUntilIdle()
+            assertThat(viewModel.videoListState.value.relatedVideos).isEmpty()
+        }
+
+    @Test
+    fun `cached detail is displayed when current aid arrives after collection starts`() =
+        runTest(testDispatcher) {
+            // Given: 详情先到，播放器标识稍后初始化。
+            videoInfoRepository.updateVideoDetail(fakeVideoDetail(1, listOf(fakeRelatedVideo(11))))
+            advanceUntilIdle()
+            assertThat(viewModel.videoListState.value.relatedVideos).isEmpty()
+
+            // When
+            viewModel.setCurrentVideo(1, 0)
+            advanceUntilIdle()
+
+            // Then: 不依赖 relatedVideos 再次发射即可显示缓存。
+            assertThat(
+                viewModel.videoListState.value.relatedVideos
+                    .map { it.aid },
+            ).containsExactly(11L)
+        }
+
+    @Test
+    fun `empty refreshed detail removes previously displayed recommendations`() =
+        runTest(testDispatcher) {
+            // Given
+            viewModel.setCurrentVideo(1, 0)
+            videoInfoRepository.updateVideoDetail(fakeVideoDetail(1, listOf(fakeRelatedVideo(11))))
+            advanceUntilIdle()
+
+            // When
+            videoInfoRepository.updateVideoDetail(fakeVideoDetail(1))
+            advanceUntilIdle()
+
+            // Then
             assertThat(viewModel.videoListState.value.relatedVideos).isEmpty()
         }
 
@@ -375,5 +421,84 @@ class VideoListViewModelTest {
             advanceUntilIdle()
 
             assertThat(viewModel.videoListState.value.videoList).isEmpty()
+        }
+
+    private fun season(id: Int) = PgcSeason(id, "剧集$id", "全12话", "poster", "landscape")
+
+    @Test
+    fun `pgc recommendations are separate from ugc and reused within the same season`() =
+        runTest(testDispatcher) {
+            // Given
+            videoInfoRepository.updateVideoDetail(fakeVideoDetail(1, listOf(fakeRelatedVideo(11))))
+            coEvery { seasonRepository.getRelatedSeasons(100) } returns listOf(season(200))
+
+            // When
+            viewModel.setCurrentVideo(1, 100)
+            advanceUntilIdle()
+            viewModel.setCurrentVideo(2, 100)
+            advanceUntilIdle()
+
+            // Then
+            assertThat(viewModel.videoListState.value.relatedVideos).isEmpty()
+            assertThat(
+                viewModel.videoListState.value.relatedSeasons
+                    .map { it.seasonId },
+            ).containsExactly(200)
+            coVerify(exactly = 1) { seasonRepository.getRelatedSeasons(100) }
+            viewModel.setCurrentVideo(1, 0)
+            advanceUntilIdle()
+            assertThat(viewModel.videoListState.value.relatedSeasons).isEmpty()
+            assertThat(
+                viewModel.videoListState.value.relatedVideos
+                    .map { it.aid },
+            ).containsExactly(11L)
+        }
+
+    @Test
+    fun `switching seasons ignores an uncancellable stale response`() =
+        runTest(testDispatcher) {
+            // Given
+            val late = CompletableDeferred<List<PgcSeason>>()
+            coEvery { seasonRepository.getRelatedSeasons(100) } coAnswers
+                { withContext(NonCancellable) { late.await() } }
+            coEvery { seasonRepository.getRelatedSeasons(200) } returns listOf(season(300))
+            viewModel.setCurrentVideo(1, 100)
+            runCurrent()
+
+            // When
+            viewModel.setCurrentVideo(2, 200)
+            runCurrent()
+            late.complete(listOf(season(999)))
+            advanceUntilIdle()
+
+            // Then
+            assertThat(
+                viewModel.videoListState.value.relatedSeasons
+                    .map { it.seasonId },
+            ).containsExactly(300)
+            assertThat(viewModel.videoListState.value.relatedError).isFalse()
+        }
+
+    @Test
+    fun `timeout becomes retryable error and empty successful response stays empty`() =
+        runTest(testDispatcher) {
+            // Given
+            coEvery { seasonRepository.getRelatedSeasons(100) } coAnswers { awaitCancellation() }
+            viewModel.setCurrentVideo(1, 100)
+            runCurrent()
+            assertThat(viewModel.videoListState.value.relatedLoading).isTrue()
+
+            // When
+            advanceTimeBy(10_001)
+            runCurrent()
+
+            // Then
+            assertThat(viewModel.videoListState.value.relatedError).isTrue()
+            assertThat(viewModel.videoListState.value.relatedLoading).isFalse()
+            coEvery { seasonRepository.getRelatedSeasons(100) } returns emptyList()
+            viewModel.loadRelatedSeasons()
+            advanceUntilIdle()
+            assertThat(viewModel.videoListState.value.relatedSeasons).isEmpty()
+            assertThat(viewModel.videoListState.value.relatedError).isFalse()
         }
 }

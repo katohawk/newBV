@@ -4,9 +4,13 @@ import androidx.lifecycle.viewModelScope
 import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
 import dev.frost819.newbv.app.data.VideoInfoRepository
+import dev.frost819.newbv.biliapi.entity.user.HistoryData
+import dev.frost819.newbv.biliapi.entity.user.HistoryItem
+import dev.frost819.newbv.biliapi.entity.user.HistoryItemType
 import dev.frost819.newbv.biliapi.entity.video.Dimension
 import dev.frost819.newbv.biliapi.entity.video.season.Episode
 import dev.frost819.newbv.biliapi.entity.video.season.SeasonDetail
+import dev.frost819.newbv.biliapi.entity.video.season.Section
 import dev.frost819.newbv.biliapi.repositories.HistoryRepository
 import dev.frost819.newbv.biliapi.repositories.VideoDetailRepository
 import dev.frost819.newbv.data.datastore.Prefs
@@ -21,6 +25,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
+import io.mockk.verify
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -35,6 +40,8 @@ import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 
 /** 收藏续播的真实优先级、超时和重复点击回归测试。 */
 class QuickEntryViewModelTest {
@@ -97,7 +104,7 @@ class QuickEntryViewModelTest {
                 ),
             publish = SeasonDetail.Publish(true, ""),
             newEpDesc = "",
-            episodes = listOf(episode(1), episode(2)),
+            episodes = listOf(episode(1), episode(2), episode(3)),
         )
 
     @Test
@@ -122,7 +129,7 @@ class QuickEntryViewModelTest {
         }
 
     @Test
-    fun `finished local episode restarts same episode instead of advancing`() =
+    fun `finished middle episode restarts same episode instead of advancing`() =
         runTest(dispatcher) {
             coEvery { detailRepository.getPgcVideoDetail(any(), any(), any()) } returns detail()
             coEvery { progress.get(any(), any(), any()) } returns PlaybackProgress(2, 20, 2, 100, -1)
@@ -132,6 +139,113 @@ class QuickEntryViewModelTest {
                 val event = awaitItem() as QuickEntryUiEffect.PlayEpisode
                 assertThat(event.cid).isEqualTo(20)
                 assertThat(event.startPosition).isEqualTo(0)
+            }
+        }
+
+    @ParameterizedTest
+    @ValueSource(ints = [123, -1])
+    fun `local final episode restarts first episode at zero`(position: Int) =
+        runTest(dispatcher) {
+            // Given: 本机末集记录优先于服务端中间集记录，附加分集不影响正片末集判断。
+            val season = detail(serverEpisode = 2).copy(sections = listOf(Section(1, "特别篇", listOf(episode(4)))))
+            coEvery { detailRepository.getPgcVideoDetail(any(), any(), any()) } returns season
+            coEvery { progress.get(7L, 0L, 100) } returns PlaybackProgress(3, 30, 3, 100, position)
+            val model = create()
+            model.uiEffect.test {
+                // When
+                model.playSeason(entry)
+
+                // Then
+                val event = awaitItem() as QuickEntryUiEffect.PlayEpisode
+                assertThat(event.aid).isEqualTo(1L)
+                assertThat(event.cid).isEqualTo(10L)
+                assertThat(event.epid).isEqualTo(1)
+                assertThat(event.startPosition).isEqualTo(0)
+                verify { info.updateVideoList(match { it.map { video -> video.cid } == listOf(10L, 20L, 30L, 40L) }) }
+                coVerify(exactly = 0) { history.getHistories(any(), any()) }
+            }
+        }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun `server final episode restarts first episode for Web and App episode ids`(hasEpid: Boolean) =
+        runTest(dispatcher) {
+            // Given
+            val season = detail(serverEpisode = if (hasEpid) 1003 else 3)
+            coEvery { detailRepository.getPgcVideoDetail(any(), any(), any()) } returns
+                season.copy(episodes = season.episodes.map { it.copy(epid = if (hasEpid) 1000 + it.id else null) })
+            val model = create()
+            model.uiEffect.test {
+                // When
+                model.playSeason(entry)
+
+                // Then
+                val event = awaitItem() as QuickEntryUiEffect.PlayEpisode
+                assertThat(event.aid).isEqualTo(1L)
+                assertThat(event.cid).isEqualTo(10L)
+                assertThat(event.epid).isEqualTo(if (hasEpid) 1001 else 1)
+                assertThat(event.startPosition).isEqualTo(0)
+            }
+        }
+
+    @Test
+    fun `recent history final episode restarts first episode at zero`() =
+        runTest(dispatcher) {
+            // Given: App 历史可能只有 aid，没有 epid 或 cid。
+            coEvery { detailRepository.getPgcVideoDetail(any(), any(), any()) } returns detail(null)
+            val lastWatched = mockk<HistoryItem>()
+            every { lastWatched.type } returns HistoryItemType.Pgc
+            every { lastWatched.oid } returns 3L
+            every { lastWatched.progress } returns 456
+            coEvery { history.getHistories(any(), any()) } returns HistoryData(0, listOf(lastWatched))
+            val model = create()
+            model.uiEffect.test {
+                // When
+                model.playSeason(entry)
+
+                // Then
+                val event = awaitItem() as QuickEntryUiEffect.PlayEpisode
+                assertThat(event.aid).isEqualTo(1L)
+                assertThat(event.cid).isEqualTo(10L)
+                assertThat(event.epid).isEqualTo(1)
+                assertThat(event.startPosition).isEqualTo(0)
+            }
+        }
+
+    @Test
+    fun `special episode keeps its saved position`() =
+        runTest(dispatcher) {
+            // Given
+            val season = detail().copy(sections = listOf(Section(1, "特别篇", listOf(episode(4)))))
+            coEvery { detailRepository.getPgcVideoDetail(any(), any(), any()) } returns season
+            coEvery { progress.get(7L, 0L, 100) } returns PlaybackProgress(4, 40, 4, 100, 123)
+            val model = create()
+            model.uiEffect.test {
+                // When
+                model.playSeason(entry)
+
+                // Then
+                val event = awaitItem() as QuickEntryUiEffect.PlayEpisode
+                assertThat(event.cid).isEqualTo(40L)
+                assertThat(event.startPosition).isEqualTo(123)
+            }
+        }
+
+    @Test
+    fun `single episode season keeps its saved position`() =
+        runTest(dispatcher) {
+            // Given
+            coEvery { detailRepository.getPgcVideoDetail(any(), any(), any()) } returns
+                detail().copy(episodes = listOf(episode(1)))
+            val model = create()
+            model.uiEffect.test {
+                // When
+                model.playSeason(entry)
+
+                // Then
+                val event = awaitItem() as QuickEntryUiEffect.PlayEpisode
+                assertThat(event.cid).isEqualTo(10L)
+                assertThat(event.startPosition).isEqualTo(88)
             }
         }
 

@@ -114,7 +114,7 @@ class LivePlayerViewModelTest {
     }
 
     @Test
-    fun `live decode error exits buffering and retains original message`() {
+    fun `live decode error exits buffering with actionable message`() {
         // Given
         val player = mockk<ExoMediaPlayer>(relaxed = true)
         val listener = slot<VideoPlayerListener>()
@@ -127,9 +127,9 @@ class LivePlayerViewModelTest {
         listener.captured.onVideoDecodeUnsupported(IllegalStateException("unsupported video"))
 
         // Then
-        assertThat(viewModel.uiState.value.playerState).isEqualTo(LivePlayerState.Error)
+        assertThat(viewModel.uiState.value.playerState)
+            .isEqualTo(LivePlayerState.Error("解码失败，请尝试切换画质或线路"))
         assertThat(viewModel.uiState.value.isBuffering).isFalse()
-        assertThat(viewModel.uiState.value.errorMessage).isEqualTo("unsupported video")
         verify(exactly = 1) { exoPlayerFactory.create(any(), any()) }
         verify(exactly = 0) { player.initPlayer() }
     }

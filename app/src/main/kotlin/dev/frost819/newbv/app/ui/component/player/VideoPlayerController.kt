@@ -11,12 +11,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,6 +45,7 @@ import dev.frost819.newbv.app.ui.action.player.DanmakuSettingAction
 import dev.frost819.newbv.app.ui.action.player.MediaProfileSettingAction
 import dev.frost819.newbv.app.ui.action.player.SubtitleSettingAction
 import dev.frost819.newbv.app.ui.component.player.menu.MenuController
+import dev.frost819.newbv.app.ui.component.rememberFocusSaver
 import dev.frost819.newbv.app.ui.state.player.PlayerState
 import dev.frost819.newbv.app.ui.state.player.PlayerUiState
 import dev.frost819.newbv.app.ui.state.player.SeekerState
@@ -74,6 +77,7 @@ import kotlinx.coroutines.launch
  * 8. MenuController — 设置菜单
  *
  * @param onVideoFocused 选集面板父视频获得焦点时按需补齐分P。
+ * @param onRetryRelatedVideos 重试剧集相关推荐。
  */
 @Composable
 @Suppress("LongParameterList", "CyclomaticComplexMethod")
@@ -113,12 +117,10 @@ fun VideoPlayerController(
     onScreenMaskChange: (ScreenMaskConfig) -> Unit,
     onEditScreenMask: () -> Unit,
     onVideoFocused: (Long) -> Unit = {},
+    onRetryRelatedVideos: () -> Unit = {},
     content: @Composable () -> Unit,
 ) {
     val controllerFocus = remember { FocusRequester() }
-    LaunchedEffect(isMaskEditing) {
-        if (!isMaskEditing) controllerFocus.requestFocus()
-    }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -126,13 +128,22 @@ fun VideoPlayerController(
     var showListController by remember { mutableStateOf(false) }
     var showMenuController by remember { mutableStateOf(false) }
     var showInfoSeekController by remember { mutableStateOf(false) }
-    var showRelatedVideosController by remember { mutableStateOf(false) }
-    val showClickableControllers by remember {
+    var showRelatedVideosController by remember(uiState.aid) { mutableStateOf(false) }
+    val buttonFocusSaver = rememberFocusSaver()
+    var restoreButtonFocus by remember { mutableStateOf(false) }
+    val showClickableControllers by remember(uiState.aid) {
         derivedStateOf {
             showListController ||
                 showMenuController ||
                 showInfoSeekController ||
                 showRelatedVideosController
+        }
+    }
+
+    LaunchedEffect(showClickableControllers, isMaskEditing) {
+        if (!showClickableControllers && !isMaskEditing) {
+            withFrameNanos { }
+            controllerFocus.requestFocus()
         }
     }
 
@@ -178,6 +189,7 @@ fun VideoPlayerController(
     /** 隐藏信息栏 + 进度条控制器。 */
     fun hideController() {
         showInfoSeekController = false
+        restoreButtonFocus = false
     }
 
     // 控制器自动隐藏：可见时 5 秒无交互自动收起，输入入口调用 onInteraction 续期
@@ -233,6 +245,14 @@ fun VideoPlayerController(
         showRelatedVideosController = false
     }
 
+    fun openRelatedVideos() {
+        seekCountdown?.cancel()
+        if (isSeeking) onGoTime(goTime)
+        isSeeking = false
+        closeAllControllers()
+        showRelatedVideosController = true
+    }
+
     /**
      * 显示自定义快捷键触发提示浮层。
      *
@@ -251,7 +271,7 @@ fun VideoPlayerController(
     }
 
     fun executeCustomShortcut(action: PlayerCustomShortcutAction) {
-        // PGC 默认走详情页且无 UP/相关视频，对应的路由类快捷键直接禁用并提示
+        // PGC 使用剧集详情；普通视频详情和 UP 主页快捷键不适用
         if (isPgc && action in pgcUnsupportedShortcutActions) {
             showShortcutTip(action, "番剧不支持")
             return
@@ -259,7 +279,7 @@ fun VideoPlayerController(
         var status: String? = null
         when (action) {
             PlayerCustomShortcutAction.OpenSettings -> showMenuController = true
-            PlayerCustomShortcutAction.OpenRelatedVideos -> showRelatedVideosController = true
+            PlayerCustomShortcutAction.OpenRelatedVideos -> openRelatedVideos()
             PlayerCustomShortcutAction.PlayPrevious -> onPlayPrevious()
             PlayerCustomShortcutAction.PlayNext -> onPlayNext()
             PlayerCustomShortcutAction.OpenVideoDetail -> onGoToVideoDetail()
@@ -336,8 +356,14 @@ fun VideoPlayerController(
             }
 
             Key.Menu, Key(763) -> {
-                hideController()
-                showMenuController = !showMenuController
+                if (event.nativeKeyEvent.repeatCount != 0) {
+                    return true
+                }
+                if (showRelatedVideosController) {
+                    closeAllControllers()
+                } else {
+                    openRelatedVideos()
+                }
                 return true
             }
 
@@ -382,7 +408,10 @@ fun VideoPlayerController(
                 }
 
                 Key.DirectionDown -> {
-                    showInfoSeekController = true
+                    if (event.nativeKeyEvent.repeatCount == 0) {
+                        restoreButtonFocus = false
+                        showInfoSeekController = true
+                    }
                     return true
                 }
 
@@ -553,16 +582,26 @@ fun VideoPlayerController(
             )
 
             // 相关视频
-            RelatedVideosController(
-                show = showRelatedVideosController,
-                relatedVideos = uiState.relatedVideos,
-                onVideoClicked = { video ->
-                    // 选中即收起浮层；否则切视频后浮层仍停留在屏幕上，
-                    // 焦点与旧列表会残留在新视频画面上
-                    showRelatedVideosController = false
-                    onRelatedVideoClicked(video)
-                },
-            )
+            key(uiState.aid) {
+                RelatedVideosController(
+                    show = showRelatedVideosController,
+                    relatedVideos = uiState.relatedVideos,
+                    isLoading = uiState.relatedLoading,
+                    isError = uiState.relatedError,
+                    onRetry = onRetryRelatedVideos,
+                    onVideoClicked = { video ->
+                        closeAllControllers()
+                        onRelatedVideoClicked(video)
+                    },
+                    onDismiss = ::closeAllControllers,
+                    onReturnToControls = {
+                        showRelatedVideosController = false
+                        restoreButtonFocus = true
+                        showInfoSeekController = true
+                    },
+                    onPlayerKeyEvent = ::handleKeyEvent,
+                )
+            }
 
             // 信息栏 + 进度条 + 按钮
             ControllerVideoInfo(
@@ -586,12 +625,14 @@ fun VideoPlayerController(
                 onPlayPause = { onPlay() },
                 onDanmakuSwitchChange = { onToggleDanmaku() },
                 onShowSettings = { showMenuController = true },
-                onShowRelatedVideos = { showRelatedVideosController = true },
+                onShowRelatedVideos = ::openRelatedVideos,
                 onGoToVideoInfo = onGoToVideoDetail,
                 onToggleLoop = { onToggleLoop() },
                 onGoToUpPage = onGoToUpPage,
                 onShowInteraction = onShowInteraction,
                 onShowComments = onShowComments,
+                buttonFocusSaver = buttonFocusSaver,
+                restoreButtonFocus = restoreButtonFocus,
             )
 
             // 分集列表

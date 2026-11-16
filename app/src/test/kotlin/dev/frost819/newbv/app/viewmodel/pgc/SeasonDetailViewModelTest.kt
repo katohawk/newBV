@@ -233,7 +233,7 @@ class SeasonDetailViewModelTest {
         }
 
     @Test
-    fun `onPlay emits NavigateToPlayer with last watched episode`() =
+    fun `onPlay emits NavigateToPlayer restarts first episode when history is on last episode`() =
         runTest(testDispatcher) {
             val detail =
                 fakeSeasonDetail(
@@ -255,9 +255,68 @@ class SeasonDetailViewModelTest {
 
                 val effect = awaitItem()
                 val navEffect = effect as SeasonDetailUiEffect.NavigateToPlayer
+                assertThat(navEffect.aid).isEqualTo(10001L)
+                assertThat(navEffect.cid).isEqualTo(20001L)
+                assertThat(navEffect.epid).isEqualTo(1001)
+                assertThat(navEffect.startPosition).isEqualTo(0)
+            }
+        }
+
+    @Test
+    fun `onPlay emits NavigateToPlayer restarts first episode when local session is on last episode`() =
+        runTest(testDispatcher) {
+            val detail = fakeSeasonDetail()
+            coEvery { videoDetailRepository.getPgcVideoDetail(any(), any(), any()) } returns detail
+
+            viewModel = createViewModel(seasonId = 100L)
+            advanceUntilIdle()
+
+            sharedState.value = VideoSharedState(aid = 10002L, lastPlayedCid = 20002L, lastPlayedTime = 120)
+            advanceUntilIdle()
+
+            viewModel.uiEffect.test {
+                viewModel.onPlay()
+                advanceUntilIdle()
+
+                val effect = awaitItem()
+                val navEffect = effect as SeasonDetailUiEffect.NavigateToPlayer
+                assertThat(navEffect.aid).isEqualTo(10001L)
+                assertThat(navEffect.cid).isEqualTo(20001L)
+                assertThat(navEffect.epid).isEqualTo(1001)
+                assertThat(navEffect.startPosition).isEqualTo(0)
+            }
+        }
+
+    @Test
+    fun `onPlay emits NavigateToPlayer resumes middle episode at saved position`() =
+        runTest(testDispatcher) {
+            val detail =
+                fakeSeasonDetail(
+                    progress =
+                        SeasonDetail.UserStatus.Progress(
+                            lastEpId = 1002,
+                            lastEpIndex = "第2话",
+                            lastTime = 300,
+                        ),
+                )
+            coEvery { videoDetailRepository.getPgcVideoDetail(any(), any(), any()) } returns
+                detail.copy(
+                    episodes = detail.episodes + detail.episodes.last().copy(id = 3, cid = 20003L, epid = 1003),
+                )
+
+            viewModel = createViewModel(seasonId = 100L)
+            advanceUntilIdle()
+
+            viewModel.uiEffect.test {
+                viewModel.onPlay()
+                advanceUntilIdle()
+
+                val effect = awaitItem()
+                val navEffect = effect as SeasonDetailUiEffect.NavigateToPlayer
                 assertThat(navEffect.aid).isEqualTo(10002L)
                 assertThat(navEffect.cid).isEqualTo(20002L)
                 assertThat(navEffect.epid).isEqualTo(1002)
+                assertThat(navEffect.startPosition).isEqualTo(300)
             }
         }
 

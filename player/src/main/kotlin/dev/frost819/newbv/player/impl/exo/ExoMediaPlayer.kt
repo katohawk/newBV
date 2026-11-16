@@ -456,29 +456,3 @@ private class ExtXStartStrippingParser(
         return delegate.parse(uri, ByteArrayInputStream(filtered.toByteArray(Charsets.UTF_8)))
     }
 }
-
-/**
- * 是否为视频解码能力相关错误（可尝试换编码 / 降画质重试）。
- *
- * 覆盖解码器初始化失败、查询失败、解码失败、格式超出能力、格式不支持；
- * 音频解码错误及其余错误（网络、解析容器等）交由普通 [VideoPlayerListener.onError] 处理。
- *
- * @param errorCode Media3 播放错误码。
- * @param rendererType 发生异常的渲染器类型，未知时不尝试视频回退。
- * @return 是否需要尝试更换视频编码或画质。
- */
-internal fun isVideoDecodeError(
-    errorCode: Int,
-    rendererType: Int?,
-): Boolean =
-    rendererType == C.TRACK_TYPE_VIDEO &&
-        when (errorCode) {
-            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
-            PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
-            PlaybackException.ERROR_CODE_DECODING_FAILED,
-            PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
-            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
-            -> true
-
-            else -> false
-        }

@@ -434,12 +434,14 @@ private fun CardInfo(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Icon(
-                painter = painterResource(id = R.drawable.ic_up),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.size(24.dp),
-            )
+            if (upName.isNotBlank()) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_up),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
             Text(
                 modifier = Modifier.weight(1f),
                 text = upName,

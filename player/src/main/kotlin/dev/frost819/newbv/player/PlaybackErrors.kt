@@ -1,5 +1,6 @@
 package dev.frost819.newbv.player
 
+import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import java.io.IOException
 
@@ -75,6 +76,12 @@ fun PlaybackException.isVideoDecodeError(): Boolean = isVideoDecodeError(errorCo
  * @param errorCode media3 错误码
  */
 internal fun isVideoDecodeError(errorCode: Int): Boolean = errorCode in VIDEO_DECODE_ERROR_CODES
+
+/** 只对确定的视频渲染器执行编码回退，音频或未知渲染器错误不得触发视频降档。 */
+internal fun isVideoDecodeError(
+    errorCode: Int,
+    rendererType: Int?,
+): Boolean = rendererType == C.TRACK_TYPE_VIDEO && isVideoDecodeError(errorCode)
 
 /**
  * 是否为音频管线错误。

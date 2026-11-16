@@ -114,6 +114,7 @@ class QuickEntryViewModel
          *
          * 续播分集解析优先级：本机记录 → 番剧详情的服务端观看记录 → 最近观看历史（按分集 aid 匹配）
          * → 无法判断时降级跳转番剧详情页。
+         * 记录在正片最后一集时从第一集零进度重播，与详情页的自动续播规则一致。
          * 同时把整季分集写入播放列表，保证播放器内可以继续切集。
          *
          * @param entry 番剧收藏入口（需含有效 seasonId）。
@@ -143,16 +144,15 @@ class QuickEntryViewModel
                     }
 
                     val resolution = resolveResumeEpisode(detail)
-                    val episode =
-                        when (resolution) {
-                            is ResumeResolution.Matched -> resolution.episode
-                            is ResumeResolution.Unknown -> null
-                        }
-
-                    if (episode == null) {
+                    if (resolution !is ResumeResolution.Matched) {
                         _uiEffect.emit(QuickEntryUiEffect.NavigateToSeasonDetail(seasonId))
                         return@launch
                     }
+
+                    // 所有记录来源统一应用整季重播规则，避免首页入口绕过详情页的处理。
+                    val restartSeason =
+                        detail.episodes.size > 1 && resolution.episode.cid == detail.episodes.last().cid
+                    val episode = if (restartSeason) detail.episodes.first() else resolution.episode
 
                     // 与详情页跳转播放器一致：先填充整季播放列表，播放器内选集/下一集才可用
                     videoInfoRepository.updateVideoList(
@@ -176,7 +176,7 @@ class QuickEntryViewModel
                             epid = episode.epid ?: episode.id,
                             seasonId = detail.seasonId,
                             subType = detail.subType,
-                            startPosition = (resolution as? ResumeResolution.Matched)?.position?.coerceAtLeast(0) ?: 0,
+                            startPosition = if (restartSeason) 0 else resolution.position.coerceAtLeast(0),
                         ),
                     )
                 }

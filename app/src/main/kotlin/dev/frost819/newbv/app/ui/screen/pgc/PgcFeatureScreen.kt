@@ -67,6 +67,7 @@ import dev.frost819.newbv.app.ui.component.LoadingTip
 import dev.frost819.newbv.app.ui.component.buttons.QuickEntryButton
 import dev.frost819.newbv.app.ui.component.dialog.EpisodeGridButton
 import dev.frost819.newbv.app.ui.component.dialog.EpisodeListDialog
+import dev.frost819.newbv.app.ui.component.focusSaverItem
 import dev.frost819.newbv.app.ui.component.rememberFocusSaver
 import dev.frost819.newbv.app.ui.navigation.PgcFeatureRoute
 import dev.frost819.newbv.app.ui.navigation.VideoPlayerRoute
@@ -206,6 +207,7 @@ private fun SeasonDetailContent(
                     episodes = detail.episodes,
                     lastPlayedCid = state.historyLastPlayedCid,
                     onClick = { episode -> viewModel.onPlayEpisode(episode) },
+                    onResume = viewModel::onPlay,
                     onShowListDialog = {
                         dialogTitle = "正片"
                         dialogEpisodes = detail.episodes
@@ -222,6 +224,7 @@ private fun SeasonDetailContent(
                     episodes = section.episodes,
                     lastPlayedCid = state.historyLastPlayedCid,
                     onClick = { episode -> viewModel.onPlayEpisode(episode) },
+                    onResume = viewModel::onPlay,
                     onShowListDialog = {
                         dialogTitle = section.title
                         dialogEpisodes = section.episodes
@@ -465,12 +468,18 @@ private fun SeasonActionButton(
     }
 }
 
+/**
+ * 分集列表；历史入口使用自动续播规则，分集卡片保留用户的明确选择。
+ *
+ * @param onResume 请求自动续播，由 ViewModel 统一处理最后一集回到第一集的规则。
+ */
 @Composable
-private fun SeasonEpisodeRow(
+internal fun SeasonEpisodeRow(
     title: String,
     episodes: List<Episode>,
     lastPlayedCid: Long,
     onClick: (Episode) -> Unit,
+    onResume: () -> Unit,
     onShowListDialog: () -> Unit,
     focusSaver: FocusSaver,
     rowKey: String,
@@ -495,13 +504,16 @@ private fun SeasonEpisodeRow(
             if (episodes.size > SEASON_EPISODE_DIALOG_THRESHOLD) {
                 EpisodeGridButton(onClick = onShowListDialog)
             }
-            // 与 UGC 详情页一致：显示「上次播放到」按钮，一键回到断点分集
+            // 历史入口属于自动续播，不能走手动选集而绕过整季重播规则。
             if (episodes.size > 1 && lastPlayedCid != 0L) {
                 val lastEpisode = episodes.find { it.cid == lastPlayedCid }
                 if (lastEpisode != null) {
                     Surface(
-                        onClick = { onClick(lastEpisode) },
-                        modifier = Modifier.touchClickable(onClick = { onClick(lastEpisode) }),
+                        onClick = onResume,
+                        modifier =
+                            Modifier
+                                .focusSaverItem(focusSaver, "${rowKey}_resume")
+                                .touchClickable(onClick = onResume),
                         shape = ClickableSurfaceDefaults.shape(shape = MaterialTheme.shapes.small),
                         // 不做聚焦放大：否则会盖住左侧的网格列表按钮
                         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
@@ -619,7 +631,7 @@ private fun EpisodeCard(
                         colors =
                             SurfaceDefaults.colors(
                                 containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = Color.White,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
                             ),
                     ) {
                         Text(

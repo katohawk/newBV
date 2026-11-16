@@ -8,14 +8,13 @@ import kotlin.math.pow
 /**
  * new BV 品牌色板测试。
  *
- * 验证主题使用低饱和品牌色，并检查主要文字组合满足可读性要求。
+ * 验证主题使用哔哩哔哩粉，并检查主要文字组合满足可读性要求。
  */
 class ColorPaletteTest {
     @Test
-    fun `brand palette uses the approved muted primary and secondary colors`() {
-        assertThat(BVColors.Primary).isEqualTo(Color(0xFF7773AD))
-        assertThat(BVColors.PrimaryStrong).isEqualTo(Color(0xFF5E5A8B))
-        assertThat(BVColors.Secondary).isEqualTo(Color(0xFF5B9B94))
+    fun `dark theme uses bilibili pink for accents and focus`() {
+        assertThat(BVColors.Primary).isEqualTo(Color(0xFFFB7299))
+        assertThat(BVColors.DarkBorder).isEqualTo(BVColors.Primary)
     }
 
     @Test
@@ -36,10 +35,37 @@ class ColorPaletteTest {
 
     @Test
     fun `brand button text has readable contrast`() {
+        assertThat(contrastRatio(BVColors.Primary, BVColors.DarkOnPrimary))
+            .isAtLeast(MIN_TEXT_CONTRAST)
+        assertThat(contrastRatio(BVColors.PrimaryLight, BVColors.DarkOnPrimary))
+            .isAtLeast(MIN_TEXT_CONTRAST)
+        assertThat(contrastRatio(BVColors.DarkPrimaryContainer, BVColors.DarkOnPrimaryContainer))
+            .isAtLeast(MIN_TEXT_CONTRAST)
+        assertThat(contrastRatio(BVColors.Secondary, BVColors.DarkOnPrimary))
+            .isAtLeast(MIN_TEXT_CONTRAST)
         assertThat(contrastRatio(BVColors.PrimaryStrong, Color.White))
             .isAtLeast(MIN_TEXT_CONTRAST)
-        assertThat(contrastRatio(BVColors.Secondary, BVColors.LightOnBackground))
+        assertThat(contrastRatio(BVColors.PrimaryLight, BVColors.LightOnBackground))
             .isAtLeast(MIN_TEXT_CONTRAST)
+        assertThat(contrastRatio(BVColors.SecondaryStrong, Color.White))
+            .isAtLeast(MIN_TEXT_CONTRAST)
+    }
+
+    @Test
+    fun `focus color is visible on browse and playback backgrounds`() {
+        val darkBackgrounds =
+            listOf(
+                Color.Black,
+                BVColors.DarkBackground,
+                BVColors.DarkSurface,
+                BVColors.DarkSurfaceVariant,
+            )
+        for (background in darkBackgrounds) {
+            assertThat(contrastRatio(BVColors.DarkBorder, background)).isAtLeast(MIN_TEXT_CONTRAST)
+        }
+        for (background in listOf(BVColors.LightBackground, BVColors.LightSurface, BVColors.LightSurfaceVariant)) {
+            assertThat(contrastRatio(BVColors.LightBorder, background)).isAtLeast(MIN_TEXT_CONTRAST)
+        }
     }
 
     @Test

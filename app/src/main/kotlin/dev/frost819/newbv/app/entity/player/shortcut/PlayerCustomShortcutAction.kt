@@ -42,12 +42,11 @@ sealed interface PlayerCustomShortcutAction {
 /**
  * 番剧（PGC）播放时不支持的快捷键动作。
  *
- * PGC 默认从详情页进入、且没有 UP 主与相关视频，因此隐藏对应控制器按钮，
+ * PGC 默认从剧集详情进入，不使用普通视频详情与 UP 主入口，因此隐藏对应按钮，
  * 绑定到这些动作的快捷键同样应被禁用（播放器会提示“番剧不支持”）。
  */
 val pgcUnsupportedShortcutActions: Set<PlayerCustomShortcutAction> =
     setOf(
         PlayerCustomShortcutAction.OpenVideoDetail,
         PlayerCustomShortcutAction.OpenUpPage,
-        PlayerCustomShortcutAction.OpenRelatedVideos,
     )

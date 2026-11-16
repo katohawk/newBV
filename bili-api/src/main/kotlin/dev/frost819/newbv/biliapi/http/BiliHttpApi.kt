@@ -33,6 +33,7 @@ import dev.frost819.newbv.biliapi.http.entity.search.WebSearchSquareData
 import dev.frost819.newbv.biliapi.http.entity.season.AppSeasonData
 import dev.frost819.newbv.biliapi.http.entity.season.FollowingSeasonAppData
 import dev.frost819.newbv.biliapi.http.entity.season.FollowingSeasonWebData
+import dev.frost819.newbv.biliapi.http.entity.season.RelatedSeasons
 import dev.frost819.newbv.biliapi.http.entity.season.SeasonFollowData
 import dev.frost819.newbv.biliapi.http.entity.season.WebSeasonData
 import dev.frost819.newbv.biliapi.http.entity.toview.ToViewData
@@ -786,6 +787,19 @@ object BiliHttpApi {
                 parameter("aid", avid)
                 parameter("bvid", bvid)
             }.body()
+
+    /**
+     * 获取剧集相关推荐（Web-only，无需登录，复用客户端已有 Cookie/UA）。
+     * 文档：bilibili-API-collect/docs/bangumi/season_index.md「查询剧集相关推荐」。
+     * @param seasonId 当前剧集季度 ID，必须为正数。
+     */
+    suspend fun getRelatedSeasons(seasonId: Int): BiliResponse<RelatedSeasons> {
+        require(seasonId > 0) { "seasonId must be positive" }
+        return client
+            .get("/pgc/season/web/related/recommend") {
+                parameter("season_id", seasonId)
+            }.body()
+    }
 
     /**
      * 获取收藏夹[mediaId]的元数据

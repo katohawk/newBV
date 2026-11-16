@@ -23,6 +23,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -36,6 +37,7 @@ import dev.frost819.newbv.app.viewmodel.login.LoginViewModel
 import dev.frost819.newbv.biliapi.entity.login.QrLoginState
 import dev.frost819.newbv.core.focus.focusInvertedColors
 import dev.frost819.newbv.core.focus.touchClickable
+import dev.frost819.newbv.core.theme.BVColors
 import io.github.g0dkar.qrcode.QRCode
 
 /**
@@ -57,7 +59,12 @@ fun QrLoginContent(
     val statusColor =
         when (uiState.state) {
             QrLoginState.Error, QrLoginState.Expired -> MaterialTheme.colorScheme.error
-            QrLoginState.Success -> MaterialTheme.colorScheme.secondary
+            QrLoginState.Success ->
+                if (MaterialTheme.colorScheme.surface.luminance() < 0.179f) {
+                    BVColors.Green
+                } else {
+                    BVColors.GreenStrong
+                }
             else -> MaterialTheme.colorScheme.onSurface
         }
 

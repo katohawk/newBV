@@ -26,8 +26,8 @@ import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -298,6 +298,7 @@ class DanmakuViewModelTest {
             coEvery { videoPlayRepository.getDanmakuMask(any(), any(), any()) } returns null
             val enabledViewModel = DanmakuViewModel(videoPlayRepository, danmakuFilterRepository)
             enabledViewModel.filterDispatcher = testDispatcher
+            enabledViewModel.maskFetchDispatcher = testDispatcher
 
             enabledViewModel.loadDanmaku(aid = 1L, cid = 2L)
             enabledViewModel.loadDanmakuMask()

@@ -7,9 +7,11 @@ import dev.frost819.newbv.biliapi.entity.season.FollowingSeasonType
 import dev.frost819.newbv.biliapi.entity.season.TimelineFilter
 import dev.frost819.newbv.biliapi.http.BiliHttpApi
 import dev.frost819.newbv.biliapi.http.entity.BiliResponse
+import dev.frost819.newbv.biliapi.http.entity.RiskControlException
 import dev.frost819.newbv.biliapi.http.entity.season.AppFollowingSeason
 import dev.frost819.newbv.biliapi.http.entity.season.FollowingSeasonAppData
 import dev.frost819.newbv.biliapi.http.entity.season.FollowingSeasonWebData
+import dev.frost819.newbv.biliapi.http.entity.season.RelatedSeasons
 import dev.frost819.newbv.biliapi.http.entity.season.WebFollowingSeason
 import dev.frost819.newbv.biliapi.http.entity.video.Timeline
 import dev.frost819.newbv.biliapi.http.entity.video.TimelineAppData
@@ -19,10 +21,12 @@ import io.mockk.coVerify
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
+import kotlin.test.assertFailsWith
 
 /**
  * [SeasonRepository] 的单元测试。
@@ -462,4 +466,39 @@ class SeasonRepositoryUnitTest {
             squareCover = "http://square.test",
             title = "番剧名",
         )
+
+    @Test
+    fun `related seasons decode real shape and exclude self duplicates and invalid IDs`() =
+        runTest {
+            // Given: relates 中的漫画不是播放器可选项。
+            val response =
+                Json { ignoreUnknownKeys = true }.decodeFromString<BiliResponse<RelatedSeasons>>(
+                    """{"code":0,"message":"success","data":{"relates":[{"type":2,"item_id":8}],"season":[
+                {"season_id":100,"title":"当前剧集","cover":"p"},
+                {"season_id":200,"title":"推荐剧集","cover":"poster","new_ep":{"cover":"wide","index_show":"全12话"}},
+                {"season_id":200,"title":"重复","cover":"p"},
+                {"season_id":0,"title":"无效","cover":"p"},
+                {"season_id":300,"title":"电影","cover":"movie"}
+            ]}}""",
+                )
+            coEvery { BiliHttpApi.getRelatedSeasons(100) } returns response
+
+            // When
+            val result = repository.getRelatedSeasons(100)
+
+            // Then
+            assertThat(result.map { it.seasonId }).containsExactly(200, 300).inOrder()
+            assertThat(result[0].horizontalCover).isEqualTo("wide")
+            assertThat(result[0].shortTitle).isEqualTo("全12话")
+            assertThat(result[1].horizontalCover).isNull()
+        }
+
+    @Test
+    fun `related season business failures are propagated instead of returning empty success`() =
+        runTest {
+            // Given
+            coEvery { BiliHttpApi.getRelatedSeasons(100) } returns BiliResponse(code = -352, message = "risk")
+            // When / Then
+            assertFailsWith<RiskControlException> { repository.getRelatedSeasons(100) }
+        }
 }

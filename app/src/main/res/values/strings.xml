@@ -45,4 +45,9 @@
     <!-- Common -->
     <string name="loading">加载中…</string>
     <string name="load_failed">加载失败</string>
+    <string name="related_videos_title">相关视频</string>
+    <string name="related_videos_empty">暂无相关推荐</string>
+    <string name="related_videos_error">相关推荐加载失败</string>
+    <string name="related_videos_retry">重试</string>
+    <string name="related_videos_back">返回</string>
 </resources>

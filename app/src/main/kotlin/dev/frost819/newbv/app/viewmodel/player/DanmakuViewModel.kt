@@ -94,7 +94,6 @@ class DanmakuViewModel
         private val renderingAllowed = MutableStateFlow(true)
         private var engineRenderingEnabled = true
 
-
         /** 蒙版流读取调度器，单元测试替换为可控调度器。 */
         internal var maskFetchDispatcher: CoroutineDispatcher = Dispatchers.IO
 
@@ -643,6 +642,7 @@ class DanmakuViewModel
             aid: Long = currentAid,
             cid: Long = currentCid,
         ) {
+            if (aid <= 0L || cid <= 0L) return
             val target = aid to cid
             if (maskTarget != target) {
                 maskGeneration++

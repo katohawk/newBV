@@ -1,7 +1,6 @@
 package dev.frost819.newbv.app.ui.component.videocard
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
@@ -61,7 +60,8 @@ class SmallVideoCardTest {
     fun titles_reserve_two_lines_and_ellipsis_overflow() {
         val titles = listOf("短标题", "第一行\n第二行", "超长视频标题".repeat(30))
         setContent {
-            Column {
+            // 并排摆放，避免第三张卡片在 TV 横屏视口中被裁切而测到错误高度。
+            Row {
                 titles.forEachIndexed { index, title ->
                     SmallVideoCard(
                         modifier = Modifier.width(200.dp).testTag("title_card_$index"),

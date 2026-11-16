@@ -1,5 +1,8 @@
 @file:Suppress("UnstableApiUsage")
 
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Properties
 
 plugins {
@@ -71,8 +74,9 @@ android {
             }
         }
         debug {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // 插桩 APK 直接引用应用与 Hilt 测试类型，调试构建不能先将这些类型混淆或裁剪。
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -81,12 +85,14 @@ android {
         }
     }
 
+    val buildTime = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).format(DateTimeFormatter.ofPattern("MMdd_HHmm"))
+
     androidComponents {
         onVariants { variant ->
             variant.outputs.forEach { output ->
                 if (output is com.android.build.api.variant.impl.VariantOutputImpl) {
                     output.outputFileName.set(
-                        "newBV_${AppConfiguration.versionCode}_${AppConfiguration.versionName}_${variant.name}.apk",
+                        "BV_$buildTime.apk",
                     )
                 }
             }

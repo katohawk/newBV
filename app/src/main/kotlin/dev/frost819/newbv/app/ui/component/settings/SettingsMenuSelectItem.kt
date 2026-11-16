@@ -33,6 +33,7 @@ fun SettingsMenuSelectItem(
 ) {
     var hasFocus by remember { mutableStateOf(false) }
 
+    val colors = MaterialTheme.colorScheme
     ListItem(
         modifier =
             modifier
@@ -46,18 +47,8 @@ fun SettingsMenuSelectItem(
                 onClick = { },
                 colors =
                     RadioButtonDefaults.colors(
-                        selectedColor =
-                            if (hasFocus) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            },
-                        unselectedColor =
-                            if (hasFocus) {
-                                MaterialTheme.colorScheme.primaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.border
-                            },
+                        selectedColor = if (hasFocus) colors.inverseOnSurface else colors.primary,
+                        unselectedColor = if (hasFocus) colors.inverseOnSurface else colors.border,
                     ),
             )
         },

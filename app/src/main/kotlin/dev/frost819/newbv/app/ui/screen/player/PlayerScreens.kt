@@ -58,17 +58,15 @@ fun NavGraphBuilder.videoPlayerScreen(navController: NavController) {
                 seasonId = route.seasonId,
                 authorName = "",
             )
-            // 2. 设置当前视频 aid（过滤 repository 数据，防止叠加打开错位）
-            videoListViewModel.setCurrentAid(route.aid)
-            // 3. 初始化 ExoPlayer（同步，确保 videoPlayer 就绪）
+            // 2. 初始化 ExoPlayer（同步，确保 videoPlayer 就绪）
             playerViewModel.initVideoPlayer(context)
-            // 4. 初始化弹幕播放器
+            // 3. 初始化弹幕播放器
             danmakuViewModel.init()
-            // 5. 加载视频详情（获取正确 cid、相关视频、历史进度）
+            // 4. 加载视频详情（获取正确 cid、相关视频、历史进度）
             //    仅当历史 cid 与当前 cid 一致时才应用断点续播
             playerViewModel.loadVideoDetail(route.aid, route.bvid, route.startPosition)
             if (playerViewModel.uiState.value.playerState is PlayerState.Error) return@LaunchedEffect
-            // 6. 使用正确的 cid 加载弹幕、字幕（route.cid 可能为 0，需从详情获取）
+            // 5. 使用正确的 cid 加载弹幕、字幕（route.cid 可能为 0，需从详情获取）
             //    弹幕分段加载按历史进度（秒 → 毫秒）定位初始分段
             val actualCid = playerViewModel.uiState.value.cid
             danmakuViewModel.loadDanmaku(
@@ -80,7 +78,7 @@ fun NavGraphBuilder.videoPlayerScreen(navController: NavController) {
             )
             danmakuViewModel.loadDanmakuMask()
             subtitleViewModel.loadSubtitleList(route.aid, actualCid)
-            // 7. 获取播放地址并开始播放
+            // 6. 获取播放地址并开始播放
             playerViewModel.markSessionStarted()
             playerViewModel.loadVideoWithResources()
         }

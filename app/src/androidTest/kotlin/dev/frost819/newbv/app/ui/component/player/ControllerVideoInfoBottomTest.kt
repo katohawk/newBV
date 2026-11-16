@@ -16,7 +16,7 @@ import androidx.tv.material3.MaterialTheme as TvMaterialTheme
 /**
  * [ControllerVideoInfoBottom] 的插桩测试。
  *
- * 重点验证 PGC 播放时隐藏“视频信息 / up主页 / 相关视频”三个按钮，
+ * 重点验证 PGC 播放时隐藏“视频信息 / up主页”按钮并显示相关视频，
  * 以及非 PGC 时正常显示。
  */
 @RunWith(AndroidJUnit4::class)
@@ -58,12 +58,12 @@ class ControllerVideoInfoBottomTest {
     }
 
     @Test
-    fun pgc_hides_video_info_up_and_related_buttons() {
+    fun pgc_hides_video_info_up_but_shows_related_button() {
         setContent(isPgc = true)
 
         composeRule.onNodeWithContentDescription("视频信息").assertDoesNotExist()
         composeRule.onNodeWithContentDescription("up主页").assertDoesNotExist()
-        composeRule.onNodeWithContentDescription("相关视频").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("相关视频").assertExists()
     }
 
     @Test
