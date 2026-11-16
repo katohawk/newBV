@@ -27,6 +27,7 @@ import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.Density
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import dev.frost819.newbv.app.entity.player.VideoListItem
 import dev.frost819.newbv.app.ui.component.videocard.VideoCardData
 import dev.frost819.newbv.app.ui.state.player.PlayerState
 import dev.frost819.newbv.app.ui.state.player.PlayerUiState
@@ -37,7 +38,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** 验证真实播放器控制器的功能/菜单键入口、焦点恢复和推荐切播边界。 */
+/** 验证真实播放器控制器的方向上键和菜单键入口、焦点恢复和推荐切播边界。 */
 @OptIn(ExperimentalTestApi::class)
 @RunWith(AndroidJUnit4::class)
 class RelatedVideosNavigationTest {
@@ -179,9 +180,9 @@ class RelatedVideosNavigationTest {
     }
 
     @Test
-    fun menu_key_opens_panel_and_wraps_without_seeking_then_confirm_plays_once() {
+    fun up_key_opens_panel_and_wraps_without_seeking_then_confirm_plays_once() {
         content()
-        press(Key.Menu)
+        press(Key.DirectionUp)
         focusedCard(1).assertIsFocused()
         press(Key.DirectionLeft)
         focusedCard(20).assertIsFocused()
@@ -201,17 +202,16 @@ class RelatedVideosNavigationTest {
     }
 
     @Test
-    fun up_restores_origin_button_and_reopening_restores_card() {
+    fun up_closes_panel_without_showing_controls_and_reopening_restores_card() {
         content()
-        openButtons()
-        press(Key.DirectionRight)
-        composeRule.onNodeWithContentDescription("弹幕开关").assertIsFocused()
-        press(Key.Menu)
+        press(Key.DirectionUp)
         press(Key.DirectionRight)
         focusedCard(2).assertIsFocused()
         press(Key.DirectionUp)
-        composeRule.onNodeWithContentDescription("弹幕开关").assertIsFocused()
-        press(Key.Menu)
+        composeRule.onNodeWithTag("related_videos").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("播放/暂停").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_root").assertIsFocused()
+        press(Key.DirectionUp)
         focusedCard(2).assertIsFocused()
         press(Key.Back)
         composeRule.onNodeWithTag("related_videos").assertDoesNotExist()
@@ -224,12 +224,13 @@ class RelatedVideosNavigationTest {
     @Test
     fun empty_list_can_return_and_late_data_receives_focus() {
         content(items = emptyList())
-        press(Key.Menu)
+        press(Key.DirectionUp)
         composeRule.onNodeWithText("暂无相关推荐").assertIsDisplayed()
         composeRule.onNodeWithText("返回").assertIsFocused()
         press(Key.DirectionUp)
-        composeRule.onNodeWithContentDescription("播放/暂停").assertIsFocused()
-        press(Key.Menu)
+        composeRule.onNodeWithTag("related_videos").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("播放/暂停").assertDoesNotExist()
+        press(Key.DirectionUp)
         composeRule.runOnIdle { state.value = state.value.copy(relatedVideos = videos(1)) }
         focusedCard(1).assertIsFocused()
         press(Key.DirectionLeft)
@@ -241,12 +242,12 @@ class RelatedVideosNavigationTest {
     @Test
     fun changing_current_video_closes_panel_and_resets_selection() {
         content()
-        press(Key.Menu)
+        press(Key.DirectionUp)
         press(Key.DirectionRight)
         focusedCard(2).assertIsFocused()
         composeRule.runOnIdle { state.value = state.value.copy(aid = 200) }
         composeRule.onNodeWithTag("related_videos").assertDoesNotExist()
-        press(Key.Menu)
+        press(Key.DirectionUp)
         focusedCard(1).assertIsFocused()
         press(Key.DirectionCenter)
         composeRule.runOnIdle { assertThat(selected).containsExactly(1L) }
@@ -264,10 +265,10 @@ class RelatedVideosNavigationTest {
     }
 
     @Test
-    fun pgc_menu_opens_distinct_season_cards_and_selection_keeps_season_id() {
+    fun pgc_up_opens_distinct_season_cards_and_selection_keeps_season_id() {
         val seasons = videos(2).mapIndexed { index, card -> card.copy(avid = 0, cid = null, seasonId = index + 100) }
         content(pgc = true, items = seasons)
-        press(Key.Menu)
+        press(Key.DirectionUp)
         composeRule.onNode(isFocused() and hasAnyAncestor(hasTestTag("related_season_100"))).assertIsFocused()
         press(Key.DirectionRight)
         composeRule.onNode(isFocused() and hasAnyAncestor(hasTestTag("related_season_101"))).assertIsFocused()
@@ -283,7 +284,7 @@ class RelatedVideosNavigationTest {
     fun pgc_recommendation_error_can_retry_without_interrupting_video() {
         content(pgc = true, items = emptyList())
         composeRule.runOnIdle { state.value = state.value.copy(relatedError = true) }
-        press(Key.Menu)
+        press(Key.DirectionUp)
         composeRule.onNodeWithText("相关推荐加载失败").assertIsDisplayed()
         composeRule.onNodeWithText("重试").performClick()
         composeRule.waitForIdle()
@@ -298,25 +299,48 @@ class RelatedVideosNavigationTest {
     }
 
     @Test
-    fun function_keys_toggle_panel_and_restore_card_without_changing_playback() {
+    fun menu_and_function_keys_toggle_episode_list_without_playing() {
         content()
+        composeRule.runOnIdle {
+            state.value =
+                state.value.copy(
+                    cid = 101,
+                    videoList = listOf(VideoListItem(aid = 100, cid = 101, title = "测试分集")),
+                )
+        }
+
         for (key in listOf(Key.Menu, Key(763))) {
             press(key)
-            focusedCard(1).assertIsFocused()
-            press(Key.DirectionRight)
-            focusedCard(2).assertIsFocused()
-            press(key)
+            composeRule.onNodeWithText("测试分集").assertIsDisplayed()
             composeRule.onNodeWithTag("related_videos").assertDoesNotExist()
             press(key)
-            focusedCard(2).assertIsFocused()
-            press(Key.DirectionLeft)
-            press(Key.Back)
+            composeRule.onNodeWithText("测试分集").assertDoesNotExist()
+            composeRule.onNodeWithContentDescription("播放/暂停").assertDoesNotExist()
+            composeRule.onNodeWithTag("player_root").assertIsFocused()
         }
         composeRule.runOnIdle {
-            assertThat(selected).isEmpty()
             assertThat(playbackChanges).isEqualTo(0)
             assertThat(exits).isEqualTo(0)
         }
+    }
+
+    @Test
+    fun up_from_progress_hides_controls_without_opening_recommendations() {
+        content()
+        press(Key.DirectionDown)
+        composeRule.onNodeWithContentDescription("播放/暂停").assertIsDisplayed()
+        press(Key.DirectionUp)
+        composeRule.onNodeWithContentDescription("播放/暂停").assertDoesNotExist()
+        composeRule.onNodeWithTag("related_videos").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_root").assertIsFocused()
+
+        openButtons()
+        press(Key.DirectionUp)
+        composeRule.onNodeWithContentDescription("播放/暂停").assertIsDisplayed()
+        press(Key.DirectionUp)
+        composeRule.onNodeWithContentDescription("播放/暂停").assertDoesNotExist()
+        composeRule.onNodeWithTag("related_videos").assertDoesNotExist()
+        composeRule.onNodeWithTag("player_root").assertIsFocused()
     }
 
     @Test

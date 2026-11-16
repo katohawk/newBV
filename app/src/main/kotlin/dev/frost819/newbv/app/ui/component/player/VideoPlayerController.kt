@@ -44,7 +44,6 @@ import dev.frost819.newbv.app.ui.action.player.DanmakuSettingAction
 import dev.frost819.newbv.app.ui.action.player.MediaProfileSettingAction
 import dev.frost819.newbv.app.ui.action.player.SubtitleSettingAction
 import dev.frost819.newbv.app.ui.component.player.menu.MenuController
-import dev.frost819.newbv.app.ui.component.rememberFocusSaver
 import dev.frost819.newbv.app.ui.state.player.PlayerState
 import dev.frost819.newbv.app.ui.state.player.PlayerUiState
 import dev.frost819.newbv.app.ui.state.player.SeekerState
@@ -128,8 +127,6 @@ fun VideoPlayerController(
     var showMenuController by remember { mutableStateOf(false) }
     var showInfoSeekController by remember { mutableStateOf(false) }
     var showRelatedVideosController by remember(uiState.aid) { mutableStateOf(false) }
-    val buttonFocusSaver = rememberFocusSaver()
-    var restoreButtonFocus by remember { mutableStateOf(false) }
     val showClickableControllers by remember(uiState.aid) {
         derivedStateOf {
             showListController ||
@@ -187,7 +184,6 @@ fun VideoPlayerController(
     /** 隐藏信息栏 + 进度条控制器。 */
     fun hideController() {
         showInfoSeekController = false
-        restoreButtonFocus = false
     }
 
     // 控制器自动隐藏：可见时 5 秒无交互自动收起，输入入口调用 onInteraction 续期
@@ -344,7 +340,7 @@ fun VideoPlayerController(
         // 自定义快捷键
         if (handleCustomShortcut(event)) return true
 
-        // 始终生效的按键（KeyUp 已被顶层过滤，此处均为 KeyDown）
+        // 播放快捷键（KeyUp 已被顶层过滤，此处均为 KeyDown）
         when (event.key) {
             Key.Back -> {
                 if (showClickableControllers) {
@@ -356,13 +352,9 @@ fun VideoPlayerController(
             }
 
             Key.Menu, Key(763) -> {
-                if (event.nativeKeyEvent.repeatCount != 0) {
-                    return true
-                }
-                if (showRelatedVideosController) {
-                    closeAllControllers()
-                } else {
-                    openRelatedVideos()
+                if (showClickableControllers && !showListController) return false
+                if (event.nativeKeyEvent.repeatCount == 0) {
+                    showListController = !showListController
                 }
                 return true
             }
@@ -403,13 +395,14 @@ fun VideoPlayerController(
                 }
 
                 Key.DirectionUp -> {
-                    showListController = true
+                    if (event.nativeKeyEvent.repeatCount == 0) {
+                        openRelatedVideos()
+                    }
                     return true
                 }
 
                 Key.DirectionDown -> {
                     if (event.nativeKeyEvent.repeatCount == 0) {
-                        restoreButtonFocus = false
                         showInfoSeekController = true
                     }
                     return true
@@ -594,11 +587,6 @@ fun VideoPlayerController(
                         onRelatedVideoClicked(video)
                     },
                     onDismiss = ::closeAllControllers,
-                    onReturnToControls = {
-                        showRelatedVideosController = false
-                        restoreButtonFocus = true
-                        showInfoSeekController = true
-                    },
                     onPlayerKeyEvent = ::handleKeyEvent,
                 )
             }
@@ -617,6 +605,7 @@ fun VideoPlayerController(
                 isPgc = isPgc,
                 danmakuEnabled = uiState.danmakuState.enabledTypes.isNotEmpty(),
                 isLooping = isLooping,
+                onDismiss = ::hideController,
                 onDirectionLeft = ::onDirectionLeft,
                 onDirectionRight = ::onDirectionRight,
                 onSeekGoTime = ::onSeekGoTime,
@@ -630,8 +619,6 @@ fun VideoPlayerController(
                 onGoToUpPage = onGoToUpPage,
                 onShowInteraction = onShowInteraction,
                 onShowComments = onShowComments,
-                buttonFocusSaver = buttonFocusSaver,
-                restoreButtonFocus = restoreButtonFocus,
             )
 
             // 分集列表

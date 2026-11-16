@@ -57,7 +57,6 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import dev.frost819.newbv.R
-import dev.frost819.newbv.app.ui.component.FocusSaver
 import dev.frost819.newbv.app.ui.component.focusSaverItem
 import dev.frost819.newbv.app.ui.component.rememberFocusSaver
 import dev.frost819.newbv.app.ui.state.player.SeekerState
@@ -66,7 +65,6 @@ import dev.frost819.newbv.app.util.formatHourMinSec
 import dev.frost819.newbv.biliapi.entity.video.VideoShot
 import dev.frost819.newbv.core.focus.touchClickable
 import dev.frost819.newbv.core.theme.BVTheme
-import kotlinx.coroutines.delay
 
 /**
  * 播放器控制器信息层。
@@ -87,6 +85,7 @@ import kotlinx.coroutines.delay
  * @param isPgc 是否来自番剧（为 true 时隐藏普通视频详情/UP按钮）
  * @param danmakuEnabled 弹幕是否开启
  * @param isLooping 是否循环播放
+ * @param onDismiss 进度条收到上键时收起控制栏。
  * @param onDirectionLeft seek 左移回调
  * @param onDirectionRight seek 右移回调
  * @param onSeekGoTime 确认 seek 回调
@@ -100,8 +99,6 @@ import kotlinx.coroutines.delay
  * @param onGoToUpPage 跳转 UP 主页面回调
  * @param onShowInteraction 打开视频交互弹窗回调
  * @param onShowComments 打开评论弹窗回调
- * @param buttonFocusSaver 功能按钮焦点，用于从相关视频返回时恢复。
- * @param restoreButtonFocus 显示时恢复功能按钮，否则默认聚焦进度条。
  */
 @Composable
 fun ControllerVideoInfo(
@@ -118,6 +115,7 @@ fun ControllerVideoInfo(
     isPgc: Boolean,
     danmakuEnabled: Boolean,
     isLooping: Boolean,
+    onDismiss: () -> Unit,
     onDirectionLeft: () -> Unit,
     onDirectionRight: () -> Unit,
     onSeekGoTime: () -> Unit,
@@ -131,8 +129,6 @@ fun ControllerVideoInfo(
     onGoToUpPage: () -> Unit,
     onShowInteraction: () -> Unit,
     onShowComments: () -> Unit,
-    buttonFocusSaver: FocusSaver = rememberFocusSaver(),
-    restoreButtonFocus: Boolean = false,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         AnimatedVisibility(
@@ -166,6 +162,7 @@ fun ControllerVideoInfo(
                 isPgc = isPgc,
                 danmakuEnabled = danmakuEnabled,
                 isLooping = isLooping,
+                onDismiss = onDismiss,
                 onDirectionLeft = onDirectionLeft,
                 onDirectionRight = onDirectionRight,
                 onSeekGoTime = onSeekGoTime,
@@ -179,8 +176,6 @@ fun ControllerVideoInfo(
                 onGoToUpPage = onGoToUpPage,
                 onShowInteraction = onShowInteraction,
                 onShowComments = onShowComments,
-                buttonFocusSaver = buttonFocusSaver,
-                restoreButtonFocus = restoreButtonFocus,
             )
         }
     }
@@ -268,8 +263,7 @@ fun ControllerVideoInfoTop(
 /**
  * 控制器底部信息（缩略图预览 + 时间 + 进度条 + 操作按钮）。
  *
- * @param buttonFocusSaver 记录功能按钮焦点，供相关视频返回时恢复。
- * @param restoreButtonFocus 首次组合时恢复功能按钮，而非聚焦进度条。
+ * @param onDismiss 进度条收到上键时收起控制栏。
  */
 @Composable
 fun ControllerVideoInfoBottom(
@@ -282,6 +276,7 @@ fun ControllerVideoInfoBottom(
     isPgc: Boolean,
     danmakuEnabled: Boolean,
     isLooping: Boolean,
+    onDismiss: () -> Unit,
     onDirectionLeft: () -> Unit,
     onDirectionRight: () -> Unit,
     onSeekGoTime: () -> Unit,
@@ -295,22 +290,15 @@ fun ControllerVideoInfoBottom(
     onGoToUpPage: () -> Unit,
     onShowInteraction: () -> Unit,
     onShowComments: () -> Unit,
-    buttonFocusSaver: FocusSaver = rememberFocusSaver(),
-    restoreButtonFocus: Boolean = false,
 ) {
     val seekFocusRequester = remember { FocusRequester() }
     val buttonsFocusRequester = remember { FocusRequester() }
+    val buttonFocusSaver = rememberFocusSaver()
 
     var isSeekFocused by remember { mutableStateOf(false) }
 
-    LaunchedEffect(restoreButtonFocus) {
-        if (restoreButtonFocus) {
-            delay(50)
-            val key = buttonFocusSaver.savedKeyValue().ifEmpty { "播放/暂停" }
-            buttonFocusSaver.focusRequesterFor(key).requestFocus()
-        } else {
-            seekFocusRequester.requestFocus()
-        }
+    LaunchedEffect(Unit) {
+        seekFocusRequester.requestFocus()
     }
 
     Column(
@@ -415,6 +403,11 @@ fun ControllerVideoInfoBottom(
                             Key.DirectionRight, Key.MediaFastForward -> {
                                 if (it.type == KeyEventType.KeyUp) return@onKeyEvent true
                                 onDirectionRight()
+                                true
+                            }
+
+                            Key.DirectionUp -> {
+                                if (it.type == KeyEventType.KeyDown && it.nativeKeyEvent.repeatCount == 0) onDismiss()
                                 true
                             }
 
@@ -577,6 +570,7 @@ private fun ControllerVideoInfoPreview() {
             isPgc = false,
             danmakuEnabled = true,
             isLooping = false,
+            onDismiss = {},
             onDirectionLeft = {},
             onDirectionRight = {},
             onSeekGoTime = {},

@@ -37,6 +37,7 @@ class ControllerVideoInfoBottomTest {
                         isPgc = isPgc,
                         danmakuEnabled = true,
                         isLooping = false,
+                        onDismiss = {},
                         onDirectionLeft = {},
                         onDirectionRight = {},
                         onSeekGoTime = {},

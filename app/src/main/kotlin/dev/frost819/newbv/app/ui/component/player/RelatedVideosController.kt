@@ -60,9 +60,8 @@ import dev.frost819.newbv.core.theme.BVTheme
  * @param show 是否显示；同一视频隐藏再打开时保留滚动位置和卡片焦点。
  * @param relatedVideos 当前视频的相关推荐，沿用接口返回顺序。
  * @param onVideoClicked 确认卡片后的播放或番剧导航回调。
- * @param onDismiss 返回键关闭面板，回到播放画面。
- * @param onReturnToControls 上键返回此前的功能按钮。
- * @param onPlayerKeyEvent 转交媒体键和菜单键，保持播放器快捷控制。
+ * @param onDismiss 上键或返回键关闭面板，回到播放画面。
+ * @param onPlayerKeyEvent 转交其他按键，保持媒体快捷控制。
  * @param isLoading 推荐请求正在进行。
  * @param isError 推荐加载失败。
  * @param onRetry 重试推荐请求。
@@ -74,7 +73,6 @@ fun RelatedVideosController(
     relatedVideos: List<VideoCardData>,
     onVideoClicked: (VideoCardData) -> Unit,
     onDismiss: () -> Unit = {},
-    onReturnToControls: () -> Unit = {},
     onPlayerKeyEvent: (KeyEvent) -> Boolean = { false },
     isLoading: Boolean = false,
     isError: Boolean = false,
@@ -132,14 +130,8 @@ fun RelatedVideosController(
             modifier =
                 Modifier.fillMaxSize().onPreviewKeyEvent { event ->
                     when (event.key) {
-                        Key.DirectionUp -> {
-                            if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) {
-                                onReturnToControls()
-                            }
-                            true
-                        }
                         Key.DirectionDown -> true
-                        Key.Back -> {
+                        Key.DirectionUp, Key.Back -> {
                             if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) {
                                 onDismiss()
                             }
