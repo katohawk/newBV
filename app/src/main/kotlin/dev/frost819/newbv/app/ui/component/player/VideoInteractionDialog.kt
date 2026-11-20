@@ -31,6 +31,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import dev.frost819.newbv.app.data.VideoSharedState
+import dev.frost819.newbv.app.entity.player.shortcut.PlayerCustomShortcutAction
 import dev.frost819.newbv.core.focus.touchClickable
 import dev.frost819.newbv.core.theme.BVTheme
 
@@ -44,6 +45,9 @@ import dev.frost819.newbv.core.theme.BVTheme
  * @param onOneClickTriple 长按点赞触发一键三连
  * @param onRetryActions 操作状态加载失败时重试。
  * @param onDismiss 关闭回调
+ * @param onShortcutAction 弹窗内自定义快捷键动作回调，返回 true 表示已处理；
+ *   为 null 时不拦截任何按键。Dialog 是独立窗口，按键不会回到播放器根节点，
+ *   需要由弹窗自行识别才能实现「同一个键再次按下关闭」。
  */
 @Composable
 fun VideoInteractionDialog(
@@ -54,6 +58,7 @@ fun VideoInteractionDialog(
     onOneClickTriple: () -> Unit,
     onDismiss: () -> Unit,
     onRetryActions: () -> Unit = {},
+    onShortcutAction: ((PlayerCustomShortcutAction) -> Boolean)? = null,
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -63,7 +68,14 @@ fun VideoInteractionDialog(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.55f)),
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .then(
+                        if (onShortcutAction != null) {
+                            Modifier.playerCustomShortcutKeyInterceptor(onShortcutAction)
+                        } else {
+                            Modifier
+                        },
+                    ),
             contentAlignment = Alignment.Center,
         ) {
             Surface(

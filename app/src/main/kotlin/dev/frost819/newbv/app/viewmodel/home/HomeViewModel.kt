@@ -154,9 +154,7 @@ class HomeViewModel
          * 列表为空时视为首次加载，连续请求直到 >= 24 条或达到 3 次上限；
          * 列表非空时视为加载更多，只请求一页。
          *
-         * 每页请求使用独立的 [LOAD_TIMEOUT_MS] 超时：首次补齐首屏时某一页超时
-         * 不应导致已加载的数据被标记为失败（避免"部分列表 + 报错"）。仅当列表
-         * 最终为空时才置 [HomeUiState.recommendError]。
+         * 每页独立使用 [LOAD_TIMEOUT_MS] 超时；部分加载失败时保留现有条目并提示重试。
          */
         fun loadRecommend() {
             val current = _uiState.value
@@ -212,11 +210,8 @@ class HomeViewModel
                         _uiState.update { it.copy(recommendFirstBatchSize = it.recommendItems.size) }
                     }
 
-                    // 首屏补齐失败时，只要已拿到部分数据就静默停止（避免"部分列表 + 报错"）；
-                    // 加载更多失败则照常报错，让底部提示可重试
-                    val hasItems = _uiState.value.recommendItems.isNotEmpty()
-                    val showError = failed && (!hasItems || !isFirstLoad)
-                    _uiState.update { it.copy(recommendLoading = false, recommendError = showError) }
+                    // 保留已加载的推荐；底部错误提示允许重试未完成的分页。
+                    _uiState.update { it.copy(recommendLoading = false, recommendError = failed) }
                 }
         }
 
