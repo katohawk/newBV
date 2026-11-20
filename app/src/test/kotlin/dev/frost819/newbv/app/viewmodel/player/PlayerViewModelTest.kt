@@ -14,18 +14,23 @@ import dev.frost819.newbv.app.ui.state.player.PlayerState
 import dev.frost819.newbv.app.ui.state.player.PlayerUiEffect
 import dev.frost819.newbv.app.ui.state.player.PlayerUiState
 import dev.frost819.newbv.app.util.PlaybackCandidate
+import dev.frost819.newbv.app.util.PlayerConstants
 import dev.frost819.newbv.app.util.VideoCapabilityProvider
 import dev.frost819.newbv.biliapi.entity.DashAudio
 import dev.frost819.newbv.biliapi.entity.DashVideo
 import dev.frost819.newbv.biliapi.entity.PlayData
 import dev.frost819.newbv.biliapi.entity.user.Author
+import dev.frost819.newbv.biliapi.entity.video.Dimension
 import dev.frost819.newbv.biliapi.entity.video.RelatedVideo
+import dev.frost819.newbv.biliapi.entity.video.UserActions
 import dev.frost819.newbv.biliapi.entity.video.VideoDetail
+import dev.frost819.newbv.biliapi.entity.video.VideoPage
 import dev.frost819.newbv.biliapi.repositories.AuthRepository
 import dev.frost819.newbv.biliapi.repositories.CoinRepository
 import dev.frost819.newbv.biliapi.repositories.FavoriteRepository
 import dev.frost819.newbv.biliapi.repositories.LikeRepository
 import dev.frost819.newbv.biliapi.repositories.OneClickTripleActionRepository
+import dev.frost819.newbv.biliapi.repositories.VideoDetailRepository
 import dev.frost819.newbv.biliapi.repositories.VideoPlayRepository
 import dev.frost819.newbv.data.datastore.ActionAfterPlay
 import dev.frost819.newbv.data.datastore.Audio
@@ -136,21 +141,23 @@ class PlayerViewModelTest {
         coEvery { progressRepository.get(any(), any(), any()) } returns null
         coEvery { videoInfoRepository.ensureUgcPages(any(), any()) } returns true
 
-        viewModel =
-            PlayerViewModel(
-                videoPlayRepository = videoPlayRepository,
-                videoInfoRepository = videoInfoRepository,
-                authRepository = authRepository,
-                exoPlayerFactory = exoPlayerFactory,
-                videoCapabilityProvider = videoCapabilityProvider,
-                likeRepository = likeRepository,
-                coinRepository = coinRepository,
-                favoriteRepository = favoriteRepository,
-                oneClickTripleActionRepository = oneClickTripleActionRepository,
-                cdnSelector = cdnSelector,
-                playbackProgressRepository = progressRepository,
-            )
+        viewModel = createPlayerViewModel()
     }
+
+    private fun createPlayerViewModel() =
+        PlayerViewModel(
+            videoPlayRepository = videoPlayRepository,
+            videoInfoRepository = videoInfoRepository,
+            authRepository = authRepository,
+            exoPlayerFactory = exoPlayerFactory,
+            videoCapabilityProvider = videoCapabilityProvider,
+            likeRepository = likeRepository,
+            coinRepository = coinRepository,
+            favoriteRepository = favoriteRepository,
+            oneClickTripleActionRepository = oneClickTripleActionRepository,
+            cdnSelector = cdnSelector,
+            playbackProgressRepository = progressRepository,
+        )
 
     @AfterEach
     fun tearDown() {
@@ -402,7 +409,7 @@ class PlayerViewModelTest {
                 delay(Long.MAX_VALUE)
                 error("unreachable")
             }
-            val detail = mockk<VideoDetail>()
+            val detail = mockk<VideoDetail>(relaxed = true)
             every { detail.aid } returns 10L
             every { detail.author } returns Author(mid = 777L, name = "详情UP", face = "")
             every { videoInfoRepository.videoDetail } returns MutableStateFlow(detail)
@@ -1651,6 +1658,94 @@ class PlayerViewModelTest {
         every { detail.author } returns Author(mid = 42L, name = "UP", face = "face")
         return detail
     }
+
+    @Test
+    fun `direct play replaces previous video list and advances from P1 through the last part`() =
+        runTest(testDispatcher) {
+            val pages =
+                listOf(
+                    VideoPage(111, 1, "第一段", 60, Dimension(1920, 1080)),
+                    VideoPage(222, 2, "第二段", 60, Dimension(1920, 1080)),
+                )
+            val detailRepository = mockk<VideoDetailRepository>(relaxed = true)
+            val detail = fakeVideoDetail(cid = 111L)
+            every { detail.pages } returns pages
+            every { detail.userActions } returns UserActions()
+            every { detail.relatedVideos } returns emptyList()
+            every { detail.history } returns VideoDetail.History(0, 0)
+            coEvery { detailRepository.getVideoDetail(any(), any(), any(), any()) } returns detail
+            every { Prefs.actionAfterPlay } returns ActionAfterPlay.PlayNext
+            videoInfoRepository = VideoInfoRepository(detailRepository, progressRepository)
+            videoInfoRepository.updateVideoList(listOf(VideoListItem(99, 999, title = "上一条视频")))
+            viewModel = createPlayerViewModel()
+            initSession(aid = 10, cid = 0)
+
+            try {
+                viewModel.loadVideoDetail(10)
+                val current = videoInfoRepository.videoList.value.single()
+                assertThat(current.aid).isEqualTo(10)
+                assertThat(current.ugcPages).containsExactlyElementsIn(pages).inOrder()
+                viewModel.uiEffect.test {
+                    viewModel.onPlaybackEnded()
+                    runCurrent()
+                    assertThat(viewModel.uiState.value.showSkipToNextEp).isTrue()
+                    advanceTimeBy(PlayerConstants.COUNTDOWN_DURATION_MS)
+                    runCurrent()
+                    assertThat(viewModel.uiState.value.cid).isEqualTo(222)
+                    expectNoEvents()
+                    viewModel.onPlaybackEnded()
+                    assertThat(awaitItem()).isEqualTo(PlayerUiEffect.FinishActivity)
+                }
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
+        }
+
+    @Test
+    fun `selecting a part manually cancels the pending next part`() =
+        runTest(testDispatcher) {
+            val pages = (1..3).map { VideoPage(it.toLong(), it, "P$it", 60, Dimension(1920, 1080)) }
+            val video = VideoListItem(10, 1, title = "Video", ugcPages = pages)
+            every { videoInfoRepository.videoList } returns MutableStateFlow(listOf(video))
+            every { Prefs.actionAfterPlay } returns ActionAfterPlay.PlayNext
+            updateUiState { it.copy(aid = 10, cid = 1) }
+
+            viewModel.onPlaybackEnded()
+            runCurrent()
+            assertThat(viewModel.uiState.value.showSkipToNextEp).isTrue()
+            viewModel.playNewVideo(video.copy(cid = 3))
+            advanceTimeBy(PlayerConstants.COUNTDOWN_DURATION_MS)
+            runCurrent()
+            assertThat(viewModel.uiState.value.cid).isEqualTo(3)
+        }
+
+    @Test
+    fun `direct play with a known cid can load parts when video detail fails`() =
+        runTest(testDispatcher) {
+            val detailRepository = mockk<VideoDetailRepository>(relaxed = true)
+            coEvery { detailRepository.getVideoDetail(any(), any(), any(), any()) } throws IOException()
+            val pages =
+                listOf(
+                    VideoPage(111, 1, "P1", 60, Dimension(1920, 1080)),
+                    VideoPage(222, 2, "P2", 60, Dimension(1920, 1080)),
+                )
+            coEvery { detailRepository.getUgcPages(any(), any()) } returns pages
+            videoInfoRepository = VideoInfoRepository(detailRepository, progressRepository)
+            viewModel = createPlayerViewModel()
+            initSession(aid = 10, cid = 111)
+
+            try {
+                viewModel.loadVideoDetail(10)
+                viewModel.playNextNow()
+                runCurrent()
+
+                val current = videoInfoRepository.videoList.value.single()
+                assertThat(current.ugcPages).isEqualTo(pages)
+                assertThat(viewModel.uiState.value.cid).isEqualTo(222)
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
+        }
 
     @Test
     fun `loadVideoDetail preserves clicked part cid`() =

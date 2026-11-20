@@ -142,6 +142,7 @@ class VideoListViewModelTest {
     @Test
     fun `videoListState syncs when repository updates`() =
         runTest(testDispatcher) {
+            viewModel.setCurrentVideo(100, 0)
             videoInfoRepository.updateVideoList(sampleVideoList)
             advanceUntilIdle()
 
@@ -415,11 +416,23 @@ class VideoListViewModelTest {
         }
 
     @Test
-    fun `empty video list in repository does not update state`() =
+    fun `episode menu only shows the queue containing the playing video`() =
         runTest(testDispatcher) {
+            videoInfoRepository.updateVideoList(sampleVideoList)
+            viewModel.setCurrentVideo(100, 0)
+            advanceUntilIdle()
+            assertThat(viewModel.videoListState.value.videoList).isEqualTo(sampleVideoList)
+
+            viewModel.setCurrentVideo(50, 0)
+            advanceUntilIdle()
+            assertThat(viewModel.videoListState.value.videoList).isEmpty()
+
+            val current = listOf(VideoListItem(50, 501, title = "当前视频"))
+            videoInfoRepository.updateVideoList(current)
+            advanceUntilIdle()
+            assertThat(viewModel.videoListState.value.videoList).isEqualTo(current)
             videoInfoRepository.updateVideoList(emptyList())
             advanceUntilIdle()
-
             assertThat(viewModel.videoListState.value.videoList).isEmpty()
         }
 

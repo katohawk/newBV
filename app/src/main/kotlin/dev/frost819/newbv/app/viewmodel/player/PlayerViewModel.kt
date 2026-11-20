@@ -467,13 +467,22 @@ class PlayerViewModel
                     it
                 }
             }
-            if (detail != null &&
+            // 卡片直接播放时不会预建队列，旧队列即使非空也可能属于上一条视频。
+            if (targetCid > 0 &&
                 _uiState.value.aid == aid &&
                 _uiState.value.cid == targetCid &&
-                videoInfoRepository.videoList.value.isEmpty()
+                videoInfoRepository.videoList.value.none { it.aid == aid }
             ) {
                 videoInfoRepository.updateVideoList(
-                    listOf(VideoListItem(aid = aid, cid = targetCid, title = detail.title)),
+                    listOf(
+                        VideoListItem(
+                            aid = aid,
+                            cid = targetCid,
+                            title = detail?.title ?: state.title,
+                            epid = state.epid,
+                            seasonId = state.seasonId.takeIf { it > 0 },
+                        ),
+                    ),
                 )
             }
         }
@@ -920,6 +929,7 @@ class PlayerViewModel
          */
         fun playNewVideo(newVideo: VideoListItem) {
             videoPlayer?.pause()
+            playNextCountdownJob?.cancel()
             navigationPagesJob?.cancel()
             videoActionsJob?.cancel()
             actionPlaybackGeneration++

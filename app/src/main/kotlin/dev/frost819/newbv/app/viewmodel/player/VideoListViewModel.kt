@@ -103,11 +103,9 @@ class VideoListViewModel
 
         init {
             viewModelScope.launch {
-                videoInfoRepository.videoList
-                    .collect { list ->
-                        if (list.isEmpty()) return@collect
-                        _videoListState.update { it.copy(videoList = list) }
-                    }
+                combine(currentVideo, videoInfoRepository.videoList) { (aid, _), list ->
+                    list.takeIf { it.any { item -> item.aid == aid } }.orEmpty()
+                }.collect { list -> _videoListState.update { it.copy(videoList = list) } }
             }
             viewModelScope.launch {
                 // 直接取详情内的 relatedVideos：详情（含相关视频）由 repository 整体原子更新，

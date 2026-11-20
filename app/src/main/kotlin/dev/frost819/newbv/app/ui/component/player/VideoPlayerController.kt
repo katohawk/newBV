@@ -241,10 +241,14 @@ fun VideoPlayerController(
         showRelatedVideosController = false
     }
 
-    fun openRelatedVideos() {
+    fun finishPendingSeek() {
         seekCountdown?.cancel()
         if (isSeeking) onGoTime(goTime)
         isSeeking = false
+    }
+
+    fun openRelatedVideos() {
+        finishPendingSeek()
         closeAllControllers()
         showRelatedVideosController = true
     }
@@ -354,8 +358,10 @@ fun VideoPlayerController(
             }
 
             Key.Menu, Key(763) -> {
-                if (showClickableControllers && !showListController) return false
+                if (showMenuController || showRelatedVideosController) return false
                 if (event.nativeKeyEvent.repeatCount == 0) {
+                    finishPendingSeek()
+                    hideController()
                     showListController = !showListController
                 }
                 return true

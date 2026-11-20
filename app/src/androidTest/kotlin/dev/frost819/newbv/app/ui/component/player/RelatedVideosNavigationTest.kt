@@ -33,6 +33,8 @@ import dev.frost819.newbv.app.ui.state.player.PlayerState
 import dev.frost819.newbv.app.ui.state.player.PlayerUiState
 import dev.frost819.newbv.app.ui.state.player.SeekerState
 import dev.frost819.newbv.app.util.VideoShotImageCache
+import dev.frost819.newbv.biliapi.entity.video.Dimension
+import dev.frost819.newbv.biliapi.entity.video.VideoPage
 import dev.frost819.newbv.data.datastore.ScreenMaskConfig
 import org.junit.Rule
 import org.junit.Test
@@ -48,6 +50,7 @@ class RelatedVideosNavigationTest {
     private val state = mutableStateOf(PlayerUiState())
     private val selected = mutableListOf<Long>()
     private val selectedSeasons = mutableListOf<Int?>()
+    private val selectedParts = mutableListOf<Long>()
     private var playbackChanges = 0
     private var seeks = 0
     private var lastSeekPosition = 0L
@@ -90,7 +93,10 @@ class RelatedVideosNavigationTest {
                     },
                     onBackToStart = {},
                     onCancelSkipToNextEp = {},
-                    onPlayNewVideo = {},
+                    onPlayNewVideo = {
+                        selectedParts += it.cid
+                        state.value = state.value.copy(cid = it.cid)
+                    },
                     onPlayPrevious = {},
                     onPlayNext = {},
                     onToggleLoop = {},
@@ -320,6 +326,38 @@ class RelatedVideosNavigationTest {
         }
         composeRule.runOnIdle {
             assertThat(playbackChanges).isEqualTo(0)
+            assertThat(exits).isEqualTo(0)
+        }
+    }
+
+    @Test
+    fun menu_from_playback_controls_focuses_current_part_and_ok_plays_highlighted_part() {
+        content()
+        val pages =
+            listOf(
+                VideoPage(101, 1, "第一段", 60, Dimension(1920, 1080)),
+                VideoPage(102, 2, "第二段", 60, Dimension(1920, 1080)),
+            )
+        composeRule.runOnIdle {
+            state.value =
+                state.value.copy(
+                    cid = 101,
+                    videoList = listOf(VideoListItem(100, 101, title = "多 P 投稿", ugcPages = pages)),
+                )
+        }
+
+        press(Key.DirectionDown)
+        press(Key.Menu)
+        composeRule.onNodeWithText("第一段").assertIsFocused()
+        press(Key.DirectionDown)
+        composeRule.onNodeWithText("第二段").assertIsFocused()
+        composeRule.runOnIdle { assertThat(selectedParts).isEmpty() }
+        press(Key.DirectionCenter)
+        press(Key.Menu)
+        press(Key.Menu)
+        composeRule.onNodeWithText("第二段").assertIsFocused()
+        composeRule.runOnIdle {
+            assertThat(selectedParts).containsExactly(102L)
             assertThat(exits).isEqualTo(0)
         }
     }
