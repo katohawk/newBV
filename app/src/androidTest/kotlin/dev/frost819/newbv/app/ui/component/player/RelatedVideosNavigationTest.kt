@@ -1,5 +1,6 @@
 package dev.frost819.newbv.app.ui.component.player
 
+import android.view.ViewConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -156,6 +157,59 @@ class RelatedVideosNavigationTest {
         composeRule.onNode(
             isFocused() and hasAnyAncestor(hasTestTag("related_${aid}_0")),
         )
+
+    @Test
+    fun held_right_accelerates_preview_and_seeks_once_on_release() {
+        content()
+        composeRule.mainClock.autoAdvance = false
+        val root = composeRule.onNodeWithTag("player_root")
+
+        root.performKeyInput { keyDown(Key.DirectionRight) }
+        composeRule.mainClock.advanceTimeBy(ViewConfiguration.getLongPressTimeout() + 1_550L)
+        composeRule.onNodeWithText("05:30 / 10:00").assertIsDisplayed()
+        composeRule.runOnIdle { assertThat(seeks).isEqualTo(0) }
+        root.performKeyInput { keyUp(Key.DirectionRight) }
+        composeRule.mainClock.advanceTimeBy(2_000)
+
+        composeRule.runOnIdle {
+            assertThat(seeks).isEqualTo(1)
+            assertThat(lastSeekPosition).isEqualTo(330_000L)
+        }
+    }
+
+    @Test
+    fun held_rewind_from_focused_progress_stops_at_start() {
+        content()
+        press(Key.DirectionDown)
+        composeRule.mainClock.autoAdvance = false
+        val root = composeRule.onNodeWithTag("player_root")
+
+        root.performKeyInput { keyDown(Key.MediaRewind) }
+        composeRule.mainClock.advanceTimeBy(6_000)
+        composeRule.runOnIdle { assertThat(seeks).isEqualTo(0) }
+        root.performKeyInput { keyUp(Key.MediaRewind) }
+        composeRule.mainClock.advanceTimeBy(1_500)
+
+        composeRule.runOnIdle {
+            assertThat(seeks).isEqualTo(1)
+            assertThat(lastSeekPosition).isEqualTo(0L)
+        }
+    }
+
+    @Test
+    fun changing_part_during_hold_discards_old_target() {
+        content()
+        composeRule.mainClock.autoAdvance = false
+        val root = composeRule.onNodeWithTag("player_root")
+        root.performKeyInput { keyDown(Key.DirectionRight) }
+        composeRule.mainClock.advanceTimeBy(ViewConfiguration.getLongPressTimeout() + 300L)
+
+        composeRule.runOnIdle { state.value = state.value.copy(cid = 202) }
+        composeRule.mainClock.advanceTimeByFrame()
+        root.performKeyInput { keyUp(Key.DirectionRight) }
+        composeRule.mainClock.advanceTimeBy(1_500)
+        composeRule.runOnIdle { assertThat(seeks).isEqualTo(0) }
+    }
 
     @Test
     fun repeated_right_presses_commit_latest_seek_without_waiting_for_idle() {

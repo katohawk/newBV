@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
@@ -17,6 +18,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,6 +34,8 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import dev.frost819.newbv.app.entity.player.VideoAspectRatio
 import dev.frost819.newbv.app.entity.player.VideoListItem
@@ -57,6 +61,13 @@ import dev.frost819.newbv.data.datastore.ScreenMaskConfig
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private const val SEEK_STEP_MS = 10_000L
+private const val SEEK_ACCELERATION_MS = 5_000L
+private const val SEEK_TAP_INTERVAL_MS = 200L
+private const val SEEK_HOLD_INTERVAL_MS = 150L
+private const val SEEK_STEPS_PER_LEVEL = 5
+private const val SEEK_MAX_HOLD_STEP_MS = 60_000L
 
 /**
  * 播放器根控制器。
@@ -149,6 +160,28 @@ fun VideoPlayerController(
     var lastSeekChangeTime by remember { mutableLongStateOf(0L) }
     var seekCountdown: Job? by remember { mutableStateOf(null) }
 
+    var heldSeekKey by remember { mutableStateOf<Key?>(null) }
+    var holdAdvanced by remember { mutableStateOf(false) }
+    var holdJob by remember { mutableStateOf<Job?>(null) }
+    val longPressTimeoutMs = LocalViewConfiguration.current.longPressTimeoutMillis
+    val currentPlayerState by rememberUpdatedState(uiState.playerState)
+
+    fun stopHoldingSeek() {
+        holdJob?.cancel()
+        heldSeekKey = null
+        holdAdvanced = false
+    }
+
+    // 换分 P 或窗口失焦可能收不到抬键，旧的预览和计时器不能带到下一段播放。
+    DisposableEffect(uiState.aid, uiState.cid, LocalWindowInfo.current.isWindowFocused) {
+        onDispose {
+            stopHoldingSeek()
+            seekCountdown?.cancel()
+            isSeeking = false
+            lastSeekChangeTime = 0L
+        }
+    }
+
     // 常显进度条
     var showPersistentSeek by remember { mutableStateOf(Prefs.showPersistentSeek) }
 
@@ -156,29 +189,10 @@ fun VideoPlayerController(
     val gestureTipState = rememberGestureTipState()
     var currentBrightness by remember { mutableFloatStateOf(-1f) }
 
-    fun calCoefficient(): Long =
-        if (System.currentTimeMillis() - lastSeekChangeTime < 200) {
-            seekChangeCount++
-            seekChangeCount / 5
-        } else {
-            seekChangeCount = 0
-            0
-        }
-
-    fun onTimeForward() {
+    fun advanceSeek(deltaMs: Long) {
+        val start = if (isSeeking) goTime else seekerState.value.currentTime
+        goTime = (start + deltaMs).coerceIn(0L, seekerState.value.totalDuration.coerceAtLeast(0L))
         isSeeking = true
-        val coefficient = calCoefficient()
-        val step = 10_000L + coefficient * 5_000L
-        goTime = (goTime + step).coerceAtMost(seekerState.value.totalDuration)
-        lastSeekChangeTime = System.currentTimeMillis()
-    }
-
-    fun onTimeBack() {
-        isSeeking = true
-        val coefficient = calCoefficient()
-        val step = 10_000L + coefficient * 5_000L
-        goTime = (goTime - step).coerceAtLeast(0L)
-        lastSeekChangeTime = System.currentTimeMillis()
     }
 
     /** 隐藏信息栏 + 进度条控制器。 */
@@ -189,48 +203,72 @@ fun VideoPlayerController(
     // 控制器自动隐藏：可见时 5 秒无交互自动收起，输入入口调用 onInteraction 续期
     val onInteraction =
         rememberControllerAutoHide(
-            visible = showInfoSeekController,
+            visible = showInfoSeekController && heldSeekKey == null,
             onHide = { hideController() },
         )
 
+    fun onSeekGoTime() {
+        stopHoldingSeek()
+        seekCountdown?.cancel()
+        onGoTime(goTime)
+        if (currentPlayerState != PlayerState.Playing) {
+            onPlay()
+        }
+        isSeeking = false
+        hideController()
+    }
+
     fun startSeekCountdown(restart: Boolean = true) {
-        // 连续按方向键只更新跳转目标，避免一直重置倒计时。
-        if (!restart && seekCountdown?.isActive == true) return
+        if (!restart && seekCountdown?.isActive == true) {
+            return
+        }
         seekCountdown?.cancel()
         seekCountdown =
             scope.launch {
                 delay(1000)
-                onGoTime(goTime)
-                if (uiState.playerState != PlayerState.Playing) onPlay()
-                isSeeking = false
-                hideController()
+                if (heldSeekKey == null) {
+                    onSeekGoTime()
+                }
             }
     }
 
-    fun onDirectionLeft() {
-        if (!isSeeking) goTime = seekerState.value.currentTime
-        onTimeBack()
-        startSeekCountdown(restart = false)
-    }
+    fun onSeekKeyDown(event: KeyEvent) {
+        if (event.nativeKeyEvent.repeatCount != 0) {
+            return
+        }
+        val direction = if (event.key == Key.DirectionLeft || event.key == Key.MediaRewind) -1 else 1
+        val eventTime = event.nativeKeyEvent.eventTime
+        val rapidTap = isSeeking && eventTime - lastSeekChangeTime in 0 until SEEK_TAP_INTERVAL_MS
+        seekChangeCount = if (rapidTap) seekChangeCount + 1 else 0
+        lastSeekChangeTime = eventTime
+        val step = SEEK_STEP_MS + seekChangeCount / SEEK_STEPS_PER_LEVEL * SEEK_ACCELERATION_MS
+        showInfoSeekController = true
+        advanceSeek(direction * step)
 
-    fun onDirectionRight() {
-        if (!isSeeking) goTime = seekerState.value.currentTime
-        onTimeForward()
-        startSeekCountdown(restart = false)
-    }
-
-    fun onSeekGoTime() {
-        seekCountdown?.cancel()
-        onGoTime(goTime)
-        if (uiState.playerState != PlayerState.Playing) onPlay()
-        isSeeking = false
-        hideController()
+        heldSeekKey = event.key
+        holdJob =
+            scope.launch {
+                delay(longPressTimeoutMs)
+                holdAdvanced = true
+                var ticks = 0L
+                // 遥控器上报重复事件的频率各异，按住期间由播放器统一推进预览。
+                while (true) {
+                    val level = 1 + ticks / SEEK_STEPS_PER_LEVEL
+                    val holdStep = (SEEK_STEP_MS + level * SEEK_ACCELERATION_MS).coerceAtMost(SEEK_MAX_HOLD_STEP_MS)
+                    advanceSeek(direction * holdStep)
+                    if (goTime == 0L || goTime == seekerState.value.totalDuration) {
+                        break
+                    }
+                    ticks++
+                    delay(SEEK_HOLD_INTERVAL_MS)
+                }
+            }
     }
 
     fun onSeekToPosition(positionMs: Long) {
         isSeeking = true
         goTime = positionMs.coerceIn(0L, seekerState.value.totalDuration)
-        lastSeekChangeTime = System.currentTimeMillis()
+        stopHoldingSeek()
         startSeekCountdown()
     }
 
@@ -242,6 +280,7 @@ fun VideoPlayerController(
     }
 
     fun finishPendingSeek() {
+        stopHoldingSeek()
         seekCountdown?.cancel()
         if (isSeeking) onGoTime(goTime)
         isSeeking = false
@@ -338,6 +377,26 @@ fun VideoPlayerController(
     fun handleKeyEvent(event: KeyEvent): Boolean {
         val confirmKeys = listOf(Key.DirectionCenter, Key.Enter, Key.Spacebar)
 
+        if (event.key == heldSeekKey) {
+            if (event.type == KeyEventType.KeyUp) {
+                val commitNow = holdAdvanced
+                stopHoldingSeek()
+                if (event.nativeKeyEvent.isCanceled) {
+                    seekCountdown?.cancel()
+                    isSeeking = false
+                } else if (commitNow) {
+                    onSeekGoTime()
+                } else {
+                    startSeekCountdown(restart = false)
+                }
+            }
+            return true
+        }
+        if (heldSeekKey != null && event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) {
+            stopHoldingSeek()
+            startSeekCountdown(restart = false)
+        }
+
         // 非 confirm 键的 KeyUp 事件消费掉
         if (event.type == KeyEventType.KeyUp && event.key !in confirmKeys) {
             return true
@@ -421,14 +480,12 @@ fun VideoPlayerController(
                         onCancelSkipToNextEp()
                         return true
                     }
-                    showInfoSeekController = true
-                    onDirectionLeft()
+                    onSeekKeyDown(event)
                     return true
                 }
 
                 Key.DirectionRight, Key.MediaFastForward -> {
-                    showInfoSeekController = true
-                    onDirectionRight()
+                    onSeekKeyDown(event)
                     return true
                 }
             }
@@ -464,9 +521,8 @@ fun VideoPlayerController(
                             },
                             onDoubleTap = { onPlay() },
                             onSeekDelta = { deltaMs ->
-                                if (!isSeeking) goTime = seekerState.value.currentTime
-                                goTime = (goTime + deltaMs).coerceIn(0L, seekerState.value.totalDuration)
-                                isSeeking = true
+                                stopHoldingSeek()
+                                advanceSeek(deltaMs)
                                 showInfoSeekController = true
                                 startSeekCountdown()
                             },
@@ -614,8 +670,7 @@ fun VideoPlayerController(
                 danmakuEnabled = uiState.danmakuState.enabledTypes.isNotEmpty(),
                 isLooping = isLooping,
                 onDismiss = ::hideController,
-                onDirectionLeft = ::onDirectionLeft,
-                onDirectionRight = ::onDirectionRight,
+                onSeekKeyDown = ::onSeekKeyDown,
                 onSeekGoTime = ::onSeekGoTime,
                 onSeekToPosition = ::onSeekToPosition,
                 onPlayPause = { onPlay() },

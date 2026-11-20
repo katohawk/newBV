@@ -143,6 +143,13 @@ test.live.roomid=21452505
 
 `local.properties` 模板见 `local.properties.template`（应提交到 git）。
 
+### 2.4 修复后的交付流程
+
+1. 每次修复完成后，运行相关验证，再用 `./gradlew :app:assembleRelease` 打签名 Release 包。按 `app/build/outputs/apk/release/output-metadata.json` 中的文件名将 APK 原名保留在 `outputs/`。
+2. 每次打包交付都将 APK 上传到极空间机械硬盘存储池的 **媒体 / TV**。通过 SSH 别名 `z2pro` 连接，在 NAS 上以登录用户解析 `/tmp/zfsv3/sata15/$(id -un)/data/媒体/TV`。写入需要权限时使用现有的 `sudo -n`。
+3. 先上传到同目录临时文件，校验 SHA-256 后改为正式文件名，再重新连接读取正式文件并与本地核对。同名同内容可复用，同名不同内容时保留已有文件并报告。
+4. 修复交付后，提交本次修复相关改动并推送到当前工作分支对应的个人远端分支，核对远端提交 SHA。单纯重新打包时复用已有提交。交付时给出本地 APK、NAS 路径及推送结果。
+
 ---
 
 ## 3. 代码规范

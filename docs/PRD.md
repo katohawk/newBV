@@ -993,8 +993,8 @@ VideoPlayerScreen
 | D-pad Center / Enter / Space | 播放/暂停；若有"从头播放"提示则从头播放 | 打开设置菜单 |
 | D-pad Up | 打开视频列表（分集） | — |
 | D-pad Down | 打开信息/进度条控制器 | — |
-| D-pad Left / MediaRewind | 快退 10s（连续按加速） | — |
-| D-pad Right / MediaFastForward | 快进 10s（连续按加速） | — |
+| D-pad Left / MediaRewind | 快退 10s（连续按加速） | 持续向后预览，松手跳转 |
+| D-pad Right / MediaFastForward | 快进 10s（连续按加速） | 持续向前预览，松手跳转 |
 | Menu / 功能键 | 点播视频打开/关闭相关推荐（含番剧、影视） | 不重复触发 |
 | Back | 关闭覆盖层；双击 3s 内退出 | — |
 | MediaPlayPause | 播放/暂停 | — |
@@ -1004,6 +1004,7 @@ VideoPlayerScreen
 **快进/快退加速机制**：
 - 基础步进：10s
 - 加速规则：200ms 内连续按 5 次后，步进增加 5s（10→15→20→25...）
+- 按住达到系统长按时长后，每 150ms 移动一次预览。步进从 15s 起，每 5 次增加 5s，最高 60s。到片头或片尾时停止移动，松手后跳到预览位置。
 - 取消跳集：若正在显示"播放下一集"提示，快退取消之
 
 **自定义快捷键**：见第 3.9.10 节

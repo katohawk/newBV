@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
@@ -86,8 +87,7 @@ import dev.frost819.newbv.core.theme.BVTheme
  * @param danmakuEnabled 弹幕是否开启
  * @param isLooping 是否循环播放
  * @param onDismiss 进度条收到上键时收起控制栏。
- * @param onDirectionLeft seek 左移回调
- * @param onDirectionRight seek 右移回调
+ * @param onSeekKeyDown 进度条收到快进或快退键按下事件时的回调。
  * @param onSeekGoTime 确认 seek 回调
  * @param onSeekToPosition 触屏拖拽/点击进度条时 seek 到指定位置（毫秒）
  * @param onPlayPause 播放/暂停回调
@@ -116,8 +116,7 @@ fun ControllerVideoInfo(
     danmakuEnabled: Boolean,
     isLooping: Boolean,
     onDismiss: () -> Unit,
-    onDirectionLeft: () -> Unit,
-    onDirectionRight: () -> Unit,
+    onSeekKeyDown: (KeyEvent) -> Unit,
     onSeekGoTime: () -> Unit,
     onSeekToPosition: (Long) -> Unit,
     onPlayPause: () -> Unit,
@@ -163,8 +162,7 @@ fun ControllerVideoInfo(
                 danmakuEnabled = danmakuEnabled,
                 isLooping = isLooping,
                 onDismiss = onDismiss,
-                onDirectionLeft = onDirectionLeft,
-                onDirectionRight = onDirectionRight,
+                onSeekKeyDown = onSeekKeyDown,
                 onSeekGoTime = onSeekGoTime,
                 onSeekToPosition = onSeekToPosition,
                 onPlayPause = onPlayPause,
@@ -277,8 +275,7 @@ fun ControllerVideoInfoBottom(
     danmakuEnabled: Boolean,
     isLooping: Boolean,
     onDismiss: () -> Unit,
-    onDirectionLeft: () -> Unit,
-    onDirectionRight: () -> Unit,
+    onSeekKeyDown: (KeyEvent) -> Unit,
     onSeekGoTime: () -> Unit,
     onSeekToPosition: (Long) -> Unit,
     onPlayPause: () -> Unit,
@@ -394,15 +391,10 @@ fun ControllerVideoInfoBottom(
                                 true
                             }
 
-                            Key.DirectionLeft, Key.MediaRewind -> {
-                                if (it.type == KeyEventType.KeyUp) return@onKeyEvent true
-                                onDirectionLeft()
-                                true
-                            }
-
-                            Key.DirectionRight, Key.MediaFastForward -> {
-                                if (it.type == KeyEventType.KeyUp) return@onKeyEvent true
-                                onDirectionRight()
+                            Key.DirectionLeft, Key.MediaRewind, Key.DirectionRight, Key.MediaFastForward -> {
+                                if (it.type == KeyEventType.KeyDown) {
+                                    onSeekKeyDown(it)
+                                }
                                 true
                             }
 
@@ -571,8 +563,7 @@ private fun ControllerVideoInfoPreview() {
             danmakuEnabled = true,
             isLooping = false,
             onDismiss = {},
-            onDirectionLeft = {},
-            onDirectionRight = {},
+            onSeekKeyDown = {},
             onSeekGoTime = {},
             onSeekToPosition = {},
             onPlayPause = {},
